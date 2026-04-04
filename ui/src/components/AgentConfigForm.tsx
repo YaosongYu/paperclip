@@ -46,6 +46,10 @@ import { ChoosePathButton } from "./PathInstructionsModal";
 import { OpenCodeLogoIcon } from "./OpenCodeLogoIcon";
 import { ReportsToPicker } from "./ReportsToPicker";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
+import {
+  coerceOptionalMarkdownDraft,
+  normalizeOptionalMarkdownPatch,
+} from "./agent-config-form-utils";
 
 /* ---- Create mode values ---- */
 
@@ -246,7 +250,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     const patch: Record<string, unknown> = {};
 
     if (Object.keys(overlay.identity).length > 0) {
-      Object.assign(patch, overlay.identity);
+      const identityPatch = { ...overlay.identity };
+      if (Object.prototype.hasOwnProperty.call(identityPatch, "capabilities")) {
+        identityPatch.capabilities = normalizeOptionalMarkdownPatch(identityPatch.capabilities);
+      }
+      Object.assign(patch, identityPatch);
     }
     if (overlay.adapterType !== undefined) {
       patch.adapterType = overlay.adapterType;
@@ -517,8 +525,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
             <Field label="Capabilities" hint={help.capabilities}>
               <MarkdownEditor
-                value={eff("identity", "capabilities", props.agent.capabilities ?? "")}
-                onChange={(v) => mark("identity", "capabilities", v || null)}
+                value={coerceOptionalMarkdownDraft(
+                  eff("identity", "capabilities", props.agent.capabilities ?? ""),
+                )}
+                onChange={(v) => mark("identity", "capabilities", coerceOptionalMarkdownDraft(v))}
                 placeholder="Describe what this agent can do..."
                 contentClassName="min-h-[44px] text-sm font-mono"
                 imageUploadHandler={async (file) => {

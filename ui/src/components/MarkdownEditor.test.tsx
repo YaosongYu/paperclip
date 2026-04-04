@@ -7,6 +7,7 @@ import { MarkdownEditor } from "./MarkdownEditor";
 
 const mdxEditorMockState = vi.hoisted(() => ({
   emitMountEmptyReset: false,
+  lastSuppressHtmlProcessing: undefined as boolean | undefined,
 }));
 
 vi.mock("@mdxeditor/editor", async () => {
@@ -27,10 +28,12 @@ vi.mock("@mdxeditor/editor", async () => {
       markdown,
       placeholder,
       onChange,
+      suppressHtmlProcessing,
     }: {
       markdown: string;
       placeholder?: string;
       onChange?: (value: string) => void;
+      suppressHtmlProcessing?: boolean;
     },
     forwardedRef: React.ForwardedRef<{ setMarkdown: (value: string) => void; focus: () => void } | null>,
   ) {
@@ -39,6 +42,10 @@ vi.mock("@mdxeditor/editor", async () => {
       setMarkdown: (value: string) => setContent(value),
       focus: () => {},
     }), []);
+
+    React.useEffect(() => {
+      mdxEditorMockState.lastSuppressHtmlProcessing = suppressHtmlProcessing;
+    }, [suppressHtmlProcessing]);
 
     React.useEffect(() => {
       setForwardedRef(forwardedRef, null);
@@ -102,6 +109,7 @@ describe("MarkdownEditor", () => {
     container.remove();
     vi.clearAllMocks();
     mdxEditorMockState.emitMountEmptyReset = false;
+    mdxEditorMockState.lastSuppressHtmlProcessing = undefined;
   });
 
   it("applies async external value updates once the editor ref becomes ready", async () => {
@@ -153,6 +161,26 @@ describe("MarkdownEditor", () => {
     await flush();
     expect(container.textContent).toContain("Loaded plan body");
     expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("suppresses HTML processing so literal angle brackets do not break markdown editing", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor
+          value="Keep incidents rate <5%"
+          onChange={() => {}}
+        />,
+      );
+    });
+
+    await flush();
+    expect(mdxEditorMockState.lastSuppressHtmlProcessing).toBe(true);
 
     await act(async () => {
       root.unmount();
