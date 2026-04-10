@@ -18,7 +18,10 @@ import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./Ma
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { ApprovalCard } from "./ApprovalCard";
 import { AgentIcon } from "./AgentIconPicker";
-import { formatDateTime } from "../lib/utils";
+import { formatAssigneeUserLabel } from "../lib/assignees";
+import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
+import { timeAgo } from "../lib/timeAgo";
+import { cn, formatDateTime } from "../lib/utils";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
 import { PluginSlotOutlet } from "@/plugins/slots";
 
@@ -48,6 +51,10 @@ interface CommentReassignment {
 interface CommentThreadProps {
   comments: CommentWithRunMeta[];
   queuedComments?: CommentWithRunMeta[];
+  linkedApprovals?: Approval[];
+  feedbackVotes?: FeedbackVote[];
+  feedbackDataSharingPreference?: FeedbackDataSharingPreference;
+  feedbackTermsUrl?: string | null;
   linkedRuns?: LinkedRunItem[];
   timelineEvents?: IssueTimelineEvent[];
   companyId?: string | null;
@@ -79,6 +86,7 @@ interface CommentThreadProps {
   mentions?: MentionOption[];
   onInterruptQueued?: (runId: string) => Promise<void>;
   interruptingQueuedRunId?: string | null;
+  composerDisabledReason?: string | null;
 }
 
 const DRAFT_DEBOUNCE_MS = 800;
@@ -276,6 +284,11 @@ function CommentCard({
   agentMap,
   companyId,
   projectId,
+  feedbackVote = null,
+  feedbackDataSharingPreference = "prompt",
+  feedbackTermsUrl = null,
+  onVote,
+  voting = false,
   highlightCommentId,
   queued = false,
 }: {
@@ -283,6 +296,14 @@ function CommentCard({
   agentMap?: Map<string, Agent>;
   companyId?: string | null;
   projectId?: string | null;
+  feedbackVote?: FeedbackVoteValue | null;
+  feedbackDataSharingPreference?: FeedbackDataSharingPreference;
+  feedbackTermsUrl?: string | null;
+  onVote?: (
+    vote: FeedbackVoteValue,
+    options?: { allowSharing?: boolean; reason?: string },
+  ) => Promise<void>;
+  voting?: boolean;
   highlightCommentId?: string | null;
   queued?: boolean;
 }) {
@@ -367,8 +388,31 @@ function CommentCard({
           />
         </div>
       ) : null}
-      {comment.runId && !isPending ? (
-        <div className="mt-2 pt-2 border-t border-border/60">
+      {comment.authorAgentId && onVote && !isQueued && !isPending ? (
+        <OutputFeedbackButtons
+          activeVote={feedbackVote}
+          disabled={voting}
+          sharingPreference={feedbackDataSharingPreference}
+          termsUrl={feedbackTermsUrl}
+          onVote={onVote}
+          rightSlot={comment.runId && !isPending ? (
+            comment.runAgentId ? (
+              <Link
+                to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
+                className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+              >
+                run {comment.runId.slice(0, 8)}
+              </Link>
+            ) : (
+              <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
+                run {comment.runId.slice(0, 8)}
+              </span>
+            )
+          ) : undefined}
+        />
+      ) : null}
+      {comment.runId && !isPending && !(comment.authorAgentId && onVote && !isQueued) ? (
+        <div className="mt-3 pt-3 border-t border-border/60">
           {comment.runAgentId ? (
             <Link
               to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
@@ -574,6 +618,11 @@ const TimelineList = memo(function TimelineList({
             agentMap={agentMap}
             companyId={companyId}
             projectId={projectId}
+            feedbackVote={feedbackVoteByTargetId?.get(comment.id) ?? null}
+            feedbackDataSharingPreference={feedbackDataSharingPreference}
+            feedbackTermsUrl={feedbackTermsUrl}
+            onVote={onVote ? (vote, options) => onVote(comment.id, vote, options) : undefined}
+            voting={votingTargetId === comment.id}
             highlightCommentId={highlightCommentId}
           />
         );
@@ -585,6 +634,10 @@ const TimelineList = memo(function TimelineList({
 export const CommentThread = memo(function CommentThread({
   comments,
   queuedComments = [],
+  linkedApprovals = [],
+  feedbackVotes = [],
+  feedbackDataSharingPreference = "prompt",
+  feedbackTermsUrl = null,
   linkedRuns = [],
   timelineEvents = [],
   companyId,
@@ -607,6 +660,7 @@ export const CommentThread = memo(function CommentThread({
   mentions: providedMentions,
   onInterruptQueued,
   interruptingQueuedRunId = null,
+  composerDisabledReason = null,
 }: CommentThreadProps) {
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
@@ -862,26 +916,8 @@ const CommentComposer = memo(function CommentComposer({
   }, []);
 
   useEffect(() => {
-    setReassignTarget(effectiveSuggestedAssigneeValue);
-  }, [effectiveSuggestedAssigneeValue]);
-
-  // Scroll to comment when URL hash matches #comment-{id}
-  useEffect(() => {
-    const hash = location.hash;
-    if (!hash.startsWith("#comment-") || comments.length + queuedComments.length === 0) return;
-    const commentId = hash.slice("#comment-".length);
-    // Only scroll once per hash
-    if (hasScrolledRef.current) return;
-    const el = document.getElementById(`comment-${commentId}`);
-    if (el) {
-      hasScrolledRef.current = true;
-      setHighlightCommentId(commentId);
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-      // Clear highlight after animation
-      const timer = setTimeout(() => setHighlightCommentId(null), 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [location.hash, comments, queuedComments]);
+    setReassignTarget(suggestedAssigneeValue);
+  }, [suggestedAssigneeValue]);
 
   async function handleSubmit() {
     const trimmed = body.trim();
@@ -896,7 +932,7 @@ const CommentComposer = memo(function CommentComposer({
       await onAdd(submittedBody, reopen ? true : undefined, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
       setReopen(true);
-      setReassignTarget(effectiveSuggestedAssigneeValue);
+      setReassignTarget(suggestedAssigneeValue);
     } catch {
       setBody((current) =>
         restoreSubmittedCommentDraft({
@@ -904,7 +940,6 @@ const CommentComposer = memo(function CommentComposer({
           submittedBody,
         }),
       );
-      // Parent mutation handlers surface the failure and the draft is restored for retry.
     } finally {
       setSubmitting(false);
     }
@@ -932,88 +967,20 @@ const CommentComposer = memo(function CommentComposer({
   const canSubmit = !submitting && !!body.trim();
 
   return (
-    <div className="space-y-4">
-      <h3 className="text-sm font-semibold">Comments &amp; Runs ({timeline.length + queuedComments.length})</h3>
-
-      {timeline.length > 0 ? (
-        <TimelineList
-          timeline={timeline}
-          agentMap={agentMap}
-          companyId={companyId}
-          projectId={projectId}
-          highlightCommentId={highlightCommentId}
-        />
-      ) : null}
-
-      {liveRunSlot}
-
-      {queuedComments.length > 0 && (
-        <div className="space-y-3">
-          <div className="flex items-center justify-between gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
-              Queued Comments ({queuedComments.length})
-            </h4>
-            {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
-              <Button
-                size="sm"
-                variant="outline"
-                className="border-red-300 text-red-700 hover:bg-red-50 hover:text-red-800 dark:border-red-500/40 dark:text-red-300 dark:hover:bg-red-500/10"
-                disabled={interruptingQueuedRunId === queuedComments[0].queueTargetRunId}
-                onClick={() => void onInterruptQueued(queuedComments[0]!.queueTargetRunId!)}
-              >
-                {interruptingQueuedRunId === queuedComments[0].queueTargetRunId ? "Interrupting..." : "Interrupt"}
-              </Button>
-            ) : null}
-          </div>
-          <div className="space-y-3">
-            {queuedComments.map((comment) => (
-              <CommentCard
-                key={comment.id}
-                comment={comment}
-                agentMap={agentMap}
-                companyId={companyId}
-                projectId={projectId}
-                highlightCommentId={highlightCommentId}
-                queued
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="space-y-2">
-        <MarkdownEditor
-          ref={editorRef}
-          value={body}
-          onChange={setBody}
-          placeholder="Leave a comment..."
-          mentions={mentions}
-          onSubmit={handleSubmit}
-          imageUploadHandler={imageUploadHandler}
-          contentClassName="min-h-[60px] text-sm"
-        />
-        <div className="flex items-center justify-end gap-3">
-          {(imageUploadHandler || onAttachImage) && (
-            <div className="mr-auto flex items-center gap-3">
-              <input
-                ref={attachInputRef}
-                type="file"
-                accept="image/png,image/jpeg,image/webp,image/gif"
-                className="hidden"
-                onChange={handleAttachFile}
-              />
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                onClick={() => attachInputRef.current?.click()}
-                disabled={attaching}
-                title="Attach image"
-              >
-                <Paperclip className="h-4 w-4" />
-              </Button>
-            </div>
-          )}
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground cursor-pointer select-none">
+    <div className="space-y-2">
+      <MarkdownEditor
+        ref={editorRef}
+        value={body}
+        onChange={setBody}
+        placeholder="Leave a comment..."
+        mentions={mentions}
+        onSubmit={handleSubmit}
+        imageUploadHandler={imageUploadHandler}
+        contentClassName="min-h-[60px] text-sm"
+      />
+      <div className="flex items-center justify-end gap-3">
+        {(imageUploadHandler || onAttachImage) && (
+          <div className="mr-auto flex items-center gap-3">
             <input
               ref={attachInputRef}
               type="file"

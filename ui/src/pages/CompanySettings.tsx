@@ -1,10 +1,12 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@/lib/router";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToast } from "../context/ToastContext";
 import { companiesApi } from "../api/companies";
-import { accessApi, type HumanCompanyRole } from "../api/access";
+import { accessApi } from "../api/access";
 import { assetsApi } from "../api/assets";
 import { queryKeys } from "../lib/queryKeys";
 import { Button } from "@/components/ui/button";
@@ -22,12 +24,7 @@ type AgentSnippetInput = {
   testResolutionUrl?: string | null;
 };
 
-const HUMAN_ROLE_LABELS: Record<HumanCompanyRole, string> = {
-  owner: "Owner",
-  admin: "Admin",
-  operator: "Operator",
-  viewer: "Viewer",
-};
+const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
 
 export function CompanySettings() {
   const {
@@ -59,10 +56,6 @@ export function CompanySettings() {
   const [inviteSnippet, setInviteSnippet] = useState<string | null>(null);
   const [snippetCopied, setSnippetCopied] = useState(false);
   const [snippetCopyDelightId, setSnippetCopyDelightId] = useState(0);
-  const [humanInviteRole, setHumanInviteRole] = useState<HumanCompanyRole>("operator");
-  const [humanInviteUrl, setHumanInviteUrl] = useState<string | null>(null);
-  const [humanInviteCopied, setHumanInviteCopied] = useState(false);
-  const [humanInviteError, setHumanInviteError] = useState<string | null>(null);
 
   const generalDirty =
     !!selectedCompany &&
@@ -91,26 +84,26 @@ export function CompanySettings() {
     }
   });
 
-  const membersQuery = useQuery({
-    queryKey: selectedCompanyId ? queryKeys.access.members(selectedCompanyId) : ["access", "members", "none"],
-    queryFn: () => accessApi.listMembers(selectedCompanyId!),
-    enabled: Boolean(selectedCompanyId),
-    retry: false,
+  const feedbackSharingMutation = useMutation({
+    mutationFn: (enabled: boolean) =>
+      companiesApi.update(selectedCompanyId!, {
+        feedbackDataSharingEnabled: enabled,
+      }),
+    onSuccess: (_company, enabled) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
+      pushToast({
+        title: enabled ? "Feedback sharing enabled" : "Feedback sharing disabled",
+        tone: "success",
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Failed to update feedback sharing",
+        body: err instanceof Error ? err.message : "Unknown error",
+        tone: "error",
+      });
+    },
   });
-
-  const memberAccess = membersQuery.data?.access;
-  const canManageMembers = memberAccess?.canManageMembers ?? false;
-  const canInviteUsers = memberAccess?.canInviteUsers ?? false;
-  const availableHumanInviteRoles: HumanCompanyRole[] =
-    memberAccess?.currentUserRole === "owner"
-      ? ["owner", "admin", "operator", "viewer"]
-      : ["operator", "viewer"];
-
-  useEffect(() => {
-    if (!availableHumanInviteRoles.includes(humanInviteRole)) {
-      setHumanInviteRole(availableHumanInviteRoles[0] ?? "operator");
-    }
-  }, [availableHumanInviteRoles, humanInviteRole]);
 
   const inviteMutation = useMutation({
     mutationFn: () =>
@@ -165,54 +158,6 @@ export function CompanySettings() {
     }
   });
 
-  const humanInviteMutation = useMutation({
-    mutationFn: () =>
-      accessApi.createCompanyInvite(selectedCompanyId!, {
-        allowedJoinTypes: "human",
-        humanRole: humanInviteRole,
-      }),
-    onSuccess: async (invite) => {
-      const base = window.location.origin.replace(/\/+$/, "");
-      const absoluteUrl = invite.inviteUrl.startsWith("http")
-        ? invite.inviteUrl
-        : `${base}${invite.inviteUrl}`;
-      setHumanInviteError(null);
-      setHumanInviteUrl(absoluteUrl);
-      try {
-        await navigator.clipboard.writeText(absoluteUrl);
-        setHumanInviteCopied(true);
-        setTimeout(() => setHumanInviteCopied(false), 2000);
-      } catch {
-        /* clipboard may not be available */
-      }
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.access.members(selectedCompanyId!),
-      });
-    },
-    onError: (err) => {
-      setHumanInviteError(
-        err instanceof Error ? err.message : "Failed to create invite"
-      );
-    },
-  });
-
-  const memberMutation = useMutation({
-    mutationFn: ({
-      memberId,
-      membershipRole,
-      status,
-    }: {
-      memberId: string;
-      membershipRole?: HumanCompanyRole;
-      status?: "active" | "suspended";
-    }) => accessApi.updateMember(selectedCompanyId!, memberId, { membershipRole, status }),
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: queryKeys.access.members(selectedCompanyId!),
-      });
-    },
-  });
-
   const syncLogoState = (nextLogoUrl: string | null) => {
     setLogoUrl(nextLogoUrl ?? "");
     void queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
@@ -254,9 +199,6 @@ export function CompanySettings() {
     setInviteSnippet(null);
     setSnippetCopied(false);
     setSnippetCopyDelightId(0);
-    setHumanInviteError(null);
-    setHumanInviteUrl(null);
-    setHumanInviteCopied(false);
   }, [selectedCompanyId]);
 
   const archiveMutation = useMutation({
@@ -475,8 +417,7 @@ export function CompanySettings() {
         </div>
       </div>
 
-      {/* Invites */}
-      <div className="space-y-4" data-testid="company-settings-invites-section">
+      <div className="space-y-4">
         <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
           Feedback Sharing
         </div>
@@ -524,66 +465,6 @@ export function CompanySettings() {
           Invites
         </div>
         <div className="space-y-3 rounded-md border border-border px-4 py-4">
-          <div className="space-y-2">
-            <div className="flex items-center gap-1.5">
-              <span className="text-xs text-muted-foreground">
-                Invite a human teammate.
-              </span>
-              <HintIcon text="Creates a company invite link for authenticated human users." />
-            </div>
-            {canInviteUsers ? (
-              <>
-                <div className="flex flex-wrap items-center gap-2">
-                  <select
-                    data-testid="company-settings-human-invite-role"
-                    className="rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                    value={humanInviteRole}
-                    onChange={(e) => setHumanInviteRole(e.target.value as HumanCompanyRole)}
-                  >
-                    {availableHumanInviteRoles.map((role) => (
-                      <option key={role} value={role}>
-                        {HUMAN_ROLE_LABELS[role]}
-                      </option>
-                    ))}
-                  </select>
-                  <Button
-                    data-testid="company-settings-create-human-invite"
-                    size="sm"
-                    onClick={() => humanInviteMutation.mutate()}
-                    disabled={humanInviteMutation.isPending}
-                  >
-                    {humanInviteMutation.isPending ? "Creating..." : "Create Human Invite"}
-                  </Button>
-                  {humanInviteCopied && (
-                    <span className="text-xs text-green-600">Copied</span>
-                  )}
-                </div>
-                {humanInviteError && (
-                  <p className="text-sm text-destructive">{humanInviteError}</p>
-                )}
-                {humanInviteUrl && (
-                  <div className="rounded-md border border-border bg-muted/30 p-2">
-                    <div className="text-xs text-muted-foreground">
-                      Human invite link
-                    </div>
-                    <textarea
-                      data-testid="company-settings-human-invite-url"
-                      className="mt-1 h-24 w-full rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs outline-none"
-                      value={humanInviteUrl}
-                      readOnly
-                    />
-                  </div>
-                )}
-              </>
-            ) : (
-              <p className="text-sm text-muted-foreground">
-                Your current company role cannot create human invites.
-              </p>
-            )}
-          </div>
-
-          <div className="border-t border-border pt-3" />
-
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-muted-foreground">
               Generate an OpenClaw agent invite snippet.
@@ -652,114 +533,6 @@ export function CompanySettings() {
                 </div>
               </div>
             </div>
-          )}
-        </div>
-      </div>
-
-      <div
-        className="space-y-4"
-        data-testid="company-settings-team-section"
-      >
-        <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-          Team
-        </div>
-        <div
-          className="space-y-3 rounded-md border border-border px-4 py-4"
-          data-testid="company-settings-team-list"
-        >
-          {membersQuery.isLoading ? (
-            <p className="text-sm text-muted-foreground">Loading members...</p>
-          ) : membersQuery.isError ? (
-            <p className="text-sm text-destructive">
-              {membersQuery.error instanceof Error
-                ? membersQuery.error.message
-                : "Failed to load members"}
-            </p>
-          ) : membersQuery.data?.members.length ? (
-            membersQuery.data.members.map((member) => {
-              const updatingMember =
-                memberMutation.isPending &&
-                memberMutation.variables?.memberId === member.id;
-              return (
-                <div
-                  key={member.id}
-                  className="flex flex-col gap-3 rounded-md border border-border/70 p-3"
-                  data-testid={`company-settings-member-${member.id}`}
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-medium">
-                        {member.user?.name || member.user?.email || member.principalId}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {member.user?.email || member.principalId}
-                      </div>
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      {member.status === "active" ? "Active" : "Suspended"}
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {canManageMembers ? (
-                      <select
-                        data-testid={`company-settings-member-role-${member.id}`}
-                        className="rounded-md border border-border bg-transparent px-2.5 py-1.5 text-sm outline-none"
-                        value={member.membershipRole}
-                        disabled={updatingMember}
-                        onChange={(e) =>
-                          memberMutation.mutate({
-                            memberId: member.id,
-                            membershipRole: e.target.value as HumanCompanyRole,
-                            status: member.status === "pending" ? "active" : member.status,
-                          })
-                        }
-                      >
-                        {availableHumanInviteRoles.map((role) => (
-                          <option key={role} value={role}>
-                            {HUMAN_ROLE_LABELS[role]}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <span className="rounded-md border border-border px-2.5 py-1.5 text-sm text-muted-foreground">
-                        {HUMAN_ROLE_LABELS[member.membershipRole]}
-                      </span>
-                    )}
-                    {canManageMembers && (
-                      <Button
-                        data-testid={`company-settings-member-status-${member.id}`}
-                        size="sm"
-                        variant="outline"
-                        disabled={updatingMember}
-                        onClick={() =>
-                          memberMutation.mutate({
-                            memberId: member.id,
-                            membershipRole: member.membershipRole,
-                            status: member.status === "active" ? "suspended" : "active",
-                          })
-                        }
-                      >
-                        {member.status === "active" ? "Suspend" : "Reactivate"}
-                      </Button>
-                    )}
-                    {updatingMember && (
-                      <span className="text-xs text-muted-foreground">Saving...</span>
-                    )}
-                  </div>
-                </div>
-              );
-            })
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              No human members yet.
-            </p>
-          )}
-          {memberMutation.isError && (
-            <p className="text-sm text-destructive">
-              {memberMutation.error instanceof Error
-                ? memberMutation.error.message
-                : "Failed to update member"}
-            </p>
           )}
         </div>
       </div>

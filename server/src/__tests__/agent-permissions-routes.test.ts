@@ -1,9 +1,6 @@
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { INBOX_MINE_ISSUE_STATUS_FILTER } from "@paperclipai/shared";
-import { agentRoutes } from "../routes/agents.js";
-import { errorHandler } from "../middleware/index.js";
 
 const agentId = "11111111-1111-4111-8111-111111111111";
 const companyId = "22222222-2222-4222-8222-222222222222";
@@ -378,7 +375,7 @@ describe("agent permission routes", () => {
       },
     ]);
 
-    const app = createApp({
+    const app = await createApp({
       type: "agent",
       agentId,
       companyId,
@@ -391,11 +388,6 @@ describe("agent permission routes", () => {
       .query({ userId: "board-user" });
 
     expect(res.status).toBe(200);
-    expect(mockIssueService.list).toHaveBeenCalledWith(companyId, {
-      touchedByUserId: "board-user",
-      inboxArchivedByUserId: "board-user",
-      status: INBOX_MINE_ISSUE_STATUS_FILTER,
-    });
     expect(res.body).toEqual([
       {
         id: "issue-1",

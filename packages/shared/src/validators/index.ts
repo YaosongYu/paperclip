@@ -253,7 +253,6 @@ export {
   boardCliAuthAccessLevelSchema,
   createCliAuthChallengeSchema,
   resolveCliAuthChallengeSchema,
-  updateCompanyMemberSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
   type CreateCompanyInvite,
@@ -264,7 +263,6 @@ export {
   type BoardCliAuthAccessLevel,
   type CreateCliAuthChallenge,
   type ResolveCliAuthChallenge,
-  type UpdateCompanyMember,
   type UpdateMemberPermissions,
   type UpdateUserCompanyAccess,
 } from "./access.js";

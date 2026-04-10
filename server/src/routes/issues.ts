@@ -67,6 +67,165 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
 
+type ParsedExecutionState = NonNullable<ReturnType<typeof parseIssueExecutionState>>;
+type NormalizedExecutionPolicy = NonNullable<ReturnType<typeof normalizeIssueExecutionPolicy>>;
+type ActivityIssueRelationSummary = {
+  id: string;
+  identifier: string | null;
+  title: string;
+};
+type ActivityExecutionParticipant = Pick<
+  NormalizedExecutionPolicy["stages"][number]["participants"][number],
+  "type" | "agentId" | "userId"
+>;
+type ExecutionStageWakeContext = {
+  wakeRole: "reviewer" | "approver" | "executor";
+  stageId: string | null;
+  stageType: ParsedExecutionState["currentStageType"];
+  currentParticipant: ParsedExecutionState["currentParticipant"];
+  returnAssignee: ParsedExecutionState["returnAssignee"];
+  lastDecisionOutcome: ParsedExecutionState["lastDecisionOutcome"];
+  allowedActions: string[];
+};
+
+function executionPrincipalsEqual(
+  left: ParsedExecutionState["currentParticipant"] | null,
+  right: ParsedExecutionState["currentParticipant"] | null,
+) {
+  if (!left || !right || left.type !== right.type) return false;
+  return left.type === "agent" ? left.agentId === right.agentId : left.userId === right.userId;
+}
+
+function executionParticipantMatchesAgent(
+  participant: ParsedExecutionState["currentParticipant"] | null,
+  agentId: string | null | undefined,
+) {
+  return Boolean(agentId) && participant?.type === "agent" && participant.agentId === agentId;
+}
+
+function buildExecutionStageWakeContext(input: {
+  state: ParsedExecutionState;
+  wakeRole: ExecutionStageWakeContext["wakeRole"];
+  allowedActions: string[];
+}): ExecutionStageWakeContext {
+  return {
+    wakeRole: input.wakeRole,
+    stageId: input.state.currentStageId,
+    stageType: input.state.currentStageType,
+    currentParticipant: input.state.currentParticipant,
+    returnAssignee: input.state.returnAssignee,
+    lastDecisionOutcome: input.state.lastDecisionOutcome,
+    allowedActions: input.allowedActions,
+  };
+}
+
+function summarizeIssueRelationForActivity(relation: {
+  id: string;
+  identifier: string | null;
+  title: string;
+}): ActivityIssueRelationSummary {
+  return {
+    id: relation.id,
+    identifier: relation.identifier,
+    title: relation.title,
+  };
+}
+
+function activityExecutionParticipantKey(participant: ActivityExecutionParticipant): string {
+  return participant.type === "agent" ? `agent:${participant.agentId}` : `user:${participant.userId}`;
+}
+
+function summarizeExecutionParticipants(
+  policy: NormalizedExecutionPolicy | null,
+  stageType: NormalizedExecutionPolicy["stages"][number]["type"],
+): ActivityExecutionParticipant[] {
+  const stage = policy?.stages.find((candidate) => candidate.type === stageType);
+  return (
+    stage?.participants.map((participant) => ({
+      type: participant.type,
+      agentId: participant.agentId ?? null,
+      userId: participant.userId ?? null,
+    })) ?? []
+  );
+}
+
+function diffExecutionParticipants(
+  previousPolicy: NormalizedExecutionPolicy | null,
+  nextPolicy: NormalizedExecutionPolicy | null,
+  stageType: NormalizedExecutionPolicy["stages"][number]["type"],
+) {
+  const previousParticipants = summarizeExecutionParticipants(previousPolicy, stageType);
+  const nextParticipants = summarizeExecutionParticipants(nextPolicy, stageType);
+  const previousByKey = new Map(previousParticipants.map((participant) => [
+    activityExecutionParticipantKey(participant),
+    participant,
+  ]));
+  const nextByKey = new Map(nextParticipants.map((participant) => [
+    activityExecutionParticipantKey(participant),
+    participant,
+  ]));
+
+  return {
+    participants: nextParticipants,
+    addedParticipants: nextParticipants.filter((participant) => !previousByKey.has(activityExecutionParticipantKey(participant))),
+    removedParticipants: previousParticipants.filter((participant) => !nextByKey.has(activityExecutionParticipantKey(participant))),
+  };
+}
+
+function buildExecutionStageWakeup(input: {
+  issueId: string;
+  previousState: ParsedExecutionState | null;
+  nextState: ParsedExecutionState | null;
+  interruptedRunId: string | null;
+  requestedByActorType: "user" | "agent";
+  requestedByActorId: string;
+}) {
+  const { issueId, previousState, nextState, interruptedRunId } = input;
+  if (!nextState) return null;
+
+  if (nextState.status === "pending") {
+    const agentId =
+      nextState.currentParticipant?.type === "agent" ? (nextState.currentParticipant.agentId ?? null) : null;
+    const stageChanged =
+      previousState?.status !== "pending" ||
+      previousState?.currentStageId !== nextState.currentStageId ||
+      !executionPrincipalsEqual(previousState?.currentParticipant ?? null, nextState.currentParticipant ?? null);
+    if (!agentId || !stageChanged) return null;
+
+    const reason =
+      nextState.currentStageType === "approval" ? "execution_approval_requested" : "execution_review_requested";
+    const executionStage = buildExecutionStageWakeContext({
+      state: nextState,
+      wakeRole: nextState.currentStageType === "approval" ? "approver" : "reviewer",
+      allowedActions: ["approve", "request_changes"],
+    });
+
+    return {
+      agentId,
+      wakeup: {
+        source: "assignment" as const,
+        triggerDetail: "system" as const,
+        reason,
+        payload: {
+          issueId,
+          mutation: "update",
+          executionStage,
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        },
+        requestedByActorType: input.requestedByActorType,
+        requestedByActorId: input.requestedByActorId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: reason,
+          source: "issue.execution_stage",
+          executionStage,
+          ...(interruptedRunId ? { interruptedRunId } : {}),
+        },
+      },
+    };
+  }
+
   if (nextState.status === "changes_requested") {
     const agentId = nextState.returnAssignee?.type === "agent" ? (nextState.returnAssignee.agentId ?? null) : null;
     const becameChangesRequested =
@@ -290,6 +449,23 @@ export function issueRoutes(
     }
 
     return runToInterrupt?.status === "running" ? runToInterrupt : null;
+  }
+
+  async function getClosedIssueExecutionWorkspace(issue: { executionWorkspaceId?: string | null }) {
+    if (!issue.executionWorkspaceId) return null;
+    const workspace = await executionWorkspacesSvc.getById(issue.executionWorkspaceId);
+    if (!workspace || !isClosedIsolatedExecutionWorkspace(workspace)) return null;
+    return workspace;
+  }
+
+  function respondClosedIssueExecutionWorkspace(
+    res: Response,
+    workspace: Pick<ExecutionWorkspace, "closedAt" | "id" | "mode" | "name" | "status">,
+  ) {
+    res.status(409).json({
+      error: getClosedIsolatedExecutionWorkspaceMessage(workspace),
+      executionWorkspace: workspace,
+    });
   }
 
   async function normalizeIssueIdentifier(rawId: string): Promise<string> {
@@ -1285,53 +1461,6 @@ export function issueRoutes(
       }
     }
 
-    const actor = getActorInfo(req);
-    const isClosed = existing.status === "done" || existing.status === "cancelled";
-    const {
-      comment: commentBody,
-      reopen: reopenRequested,
-      interrupt: interruptRequested,
-      hiddenAt: hiddenAtRaw,
-      ...updateFields
-    } = req.body;
-    let interruptedRunId: string | null = null;
-
-    if (interruptRequested) {
-      if (!commentBody) {
-        res.status(400).json({ error: "Interrupt is only supported when posting a comment" });
-        return;
-      }
-      if (req.actor.type !== "board") {
-        res.status(403).json({ error: "Only board users can interrupt active runs from issue comments" });
-        return;
-      }
-
-      const runToInterrupt = await resolveActiveIssueRun(existing);
-      if (runToInterrupt) {
-        const cancelled = await heartbeat.cancelRun(runToInterrupt.id);
-        if (cancelled) {
-          interruptedRunId = cancelled.id;
-          await logActivity(db, {
-            companyId: cancelled.companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            action: "heartbeat.cancelled",
-            entityType: "heartbeat_run",
-            entityId: cancelled.id,
-            details: { agentId: cancelled.agentId, source: "issue_comment_interrupt", issueId: existing.id },
-          });
-        }
-      }
-    }
-
-    if (hiddenAtRaw !== undefined) {
-      updateFields.hiddenAt = hiddenAtRaw ? new Date(hiddenAtRaw) : null;
-    }
-    if (commentBody && reopenRequested === true && isClosed && updateFields.status === undefined) {
-      updateFields.status = "todo";
-    }
     let issue;
     try {
       if (transition.decision && decisionId) {

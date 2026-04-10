@@ -86,6 +86,36 @@ const SESSIONED_LOCAL_ADAPTERS = new Set([
   "pi_local",
 ]);
 
+type RuntimeConfigSecretResolver = Pick<
+  ReturnType<typeof secretService>,
+  "resolveAdapterConfigForRuntime" | "resolveEnvBindings"
+>;
+
+export async function resolveExecutionRunAdapterConfig(input: {
+  companyId: string;
+  executionRunConfig: Record<string, unknown>;
+  projectEnv: unknown;
+  secretsSvc: RuntimeConfigSecretResolver;
+}) {
+  const { config: resolvedConfig, secretKeys } = await input.secretsSvc.resolveAdapterConfigForRuntime(
+    input.companyId,
+    input.executionRunConfig,
+  );
+  const projectEnvResolution = input.projectEnv
+    ? await input.secretsSvc.resolveEnvBindings(input.companyId, input.projectEnv)
+    : { env: {}, secretKeys: new Set<string>() };
+  if (Object.keys(projectEnvResolution.env).length > 0) {
+    resolvedConfig.env = {
+      ...parseObject(resolvedConfig.env),
+      ...projectEnvResolution.env,
+    };
+    for (const key of projectEnvResolution.secretKeys) {
+      secretKeys.add(key);
+    }
+  }
+  return { resolvedConfig, secretKeys };
+}
+
 export function applyPersistedExecutionWorkspaceConfig(input: {
   config: Record<string, unknown>;
   workspaceConfig: ExecutionWorkspaceConfig | null;
@@ -122,10 +152,10 @@ export function stripWorkspaceRuntimeFromExecutionRunConfig(config: Record<strin
 export function buildRealizedExecutionWorkspaceFromPersisted(input: {
   base: ExecutionWorkspaceInput;
   workspace: ExecutionWorkspace;
-}): RealizedExecutionWorkspace {
+}): RealizedExecutionWorkspace | null {
   const cwd = readNonEmptyString(input.workspace.cwd) ?? readNonEmptyString(input.workspace.providerRef);
   if (!cwd) {
-    throw new Error(`Execution workspace ${input.workspace.id} has no local path to reuse.`);
+    return null;
   }
 
   const strategy = input.workspace.strategyType === "git_worktree" ? "git_worktree" : "project_primary";
@@ -2672,10 +2702,12 @@ export function heartbeatService(db: Db) {
       : persistedWorkspaceManagedConfig;
     const configSnapshot = buildExecutionWorkspaceConfigSnapshot(mergedConfig);
     const executionRunConfig = stripWorkspaceRuntimeFromExecutionRunConfig(mergedConfig);
-    const { config: resolvedConfig, secretKeys } = await secretsSvc.resolveAdapterConfigForRuntime(
-      agent.companyId,
+    const { resolvedConfig, secretKeys } = await resolveExecutionRunAdapterConfig({
+      companyId: agent.companyId,
       executionRunConfig,
-    );
+      projectEnv: projectContext?.env ?? null,
+      secretsSvc,
+    });
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId);
     const runtimeConfig = {
       ...resolvedConfig,
@@ -2694,12 +2726,13 @@ export function heartbeatService(db: Db) {
       repoUrl: resolvedWorkspace.repoUrl,
       repoRef: resolvedWorkspace.repoRef,
     } satisfies ExecutionWorkspaceInput;
-    const executionWorkspace = shouldReuseExisting && existingExecutionWorkspace
+    const reusedExecutionWorkspace = shouldReuseExisting && existingExecutionWorkspace
       ? buildRealizedExecutionWorkspaceFromPersisted({
           base: executionWorkspaceBase,
           workspace: existingExecutionWorkspace,
         })
-      : await realizeExecutionWorkspace({
+      : null;
+    const executionWorkspace = reusedExecutionWorkspace ?? await realizeExecutionWorkspace({
           base: executionWorkspaceBase,
           config: runtimeConfig,
           issue: issueRef,

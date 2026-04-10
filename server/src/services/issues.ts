@@ -117,7 +117,12 @@ type ProjectGoalReader = Pick<Db, "select">;
 type DbReader = Pick<Db, "select">;
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
+  blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+};
+type IssueRelationSummaryMap = {
+  blockedBy: IssueRelationIssueSummary[];
+  blocks: IssueRelationIssueSummary[];
 };
 
 function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
@@ -1374,7 +1379,12 @@ export function issueService(db: Db) {
       companyId: string,
       data: IssueCreateInput,
     ) => {
-      const { labelIds: inputLabelIds, inheritExecutionWorkspaceFromIssueId, ...issueData } = data;
+      const {
+        labelIds: inputLabelIds,
+        blockedByIssueIds,
+        inheritExecutionWorkspaceFromIssueId,
+        ...issueData
+      } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -1477,6 +1487,14 @@ export function issueService(db: Db) {
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
         }
+        // Self-correcting counter: use MAX(issue_number) + 1 if the counter
+        // has drifted below the actual max, preventing identifier collisions.
+        const [maxRow] = await tx
+          .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
+          .from(issues)
+          .where(eq(issues.companyId, companyId));
+        const currentMax = maxRow?.maxNum ?? 0;
+
         const [company] = await tx
           .update(companies)
           .set({

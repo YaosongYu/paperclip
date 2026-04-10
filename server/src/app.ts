@@ -128,8 +128,8 @@ export async function createApp(
       },
       user: {
         id: req.actor.userId,
-        email: req.actor.userEmail ?? null,
-        name: req.actor.userName ?? null,
+        email: null,
+        name: req.actor.source === "local_implicit" ? "Local Board" : null,
       },
     });
   });

@@ -9,7 +9,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request } from "express";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, isNull, desc } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentApiKeys,
@@ -26,16 +26,11 @@ import {
   createOpenClawInvitePromptSchema,
   listJoinRequestsQuerySchema,
   resolveCliAuthChallengeSchema,
-  updateCompanyMemberSchema,
   updateMemberPermissionsSchema,
   updateUserCompanyAccessSchema,
   PERMISSION_KEYS
 } from "@paperclipai/shared";
-import type {
-  DeploymentExposure,
-  DeploymentMode,
-  HumanCompanyMembershipRole,
-} from "@paperclipai/shared";
+import type { DeploymentExposure, DeploymentMode } from "@paperclipai/shared";
 import {
   forbidden,
   conflict,
@@ -53,15 +48,6 @@ import {
   logActivity,
   notifyHireApproved
 } from "../services/index.js";
-import {
-  grantsForHumanRole,
-  normalizeHumanRole,
-  resolveHumanInviteRole,
-} from "../services/company-member-roles.js";
-import {
-  agentJoinGrantsFromDefaults,
-  grantsFromDefaults,
-} from "../services/invite-grants.js";
 import { assertCompanyAccess } from "./authz.js";
 import {
   claimBoardOwnership,
@@ -884,7 +870,6 @@ function toInviteSummaryResponse(
     companyName,
     inviteType: invite.inviteType,
     allowedJoinTypes: invite.allowedJoinTypes,
-    humanRole: extractInviteHumanRole(invite.defaultsPayload),
     expiresAt: invite.expiresAt,
     onboardingPath,
     onboardingUrl: baseUrl ? `${baseUrl}${onboardingPath}` : onboardingPath,
@@ -1016,8 +1001,7 @@ function buildInviteOnboardingManifest(
     deploymentExposure: DeploymentExposure;
     bindHost: string;
     allowedHostnames: string[];
-  },
-  companyName: string | null = null,
+  }
 ) {
   const baseUrl = requestBaseUrl(req);
   const skillPath = "/api/skills/paperclip";
@@ -1365,8 +1349,7 @@ function extractInviteMessage(
 
 function mergeInviteDefaults(
   defaultsPayload: Record<string, unknown> | null | undefined,
-  agentMessage: string | null,
-  humanRole: HumanCompanyMembershipRole | null
+  agentMessage: string | null
 ): Record<string, unknown> | null {
   const merged =
     defaultsPayload && typeof defaultsPayload === "object"
@@ -1374,15 +1357,6 @@ function mergeInviteDefaults(
       : {};
   if (agentMessage) {
     merged.agentMessage = agentMessage;
-  }
-  if (humanRole) {
-    const nextHumanDefaults =
-      merged.human && typeof merged.human === "object" && !Array.isArray(merged.human)
-        ? { ...(merged.human as Record<string, unknown>) }
-        : {};
-    nextHumanDefaults.role = humanRole;
-    nextHumanDefaults.grants = grantsForHumanRole(humanRole);
-    merged.human = nextHumanDefaults;
   }
   return Object.keys(merged).length ? merged : null;
 }
@@ -1416,24 +1390,58 @@ async function resolveActorEmail(db: Db, req: Request): Promise<string | null> {
   return user?.email ?? null;
 }
 
-function extractInviteHumanRole(
-  defaultsPayload: Record<string, unknown> | null | undefined
-): HumanCompanyMembershipRole | null {
-  if (!defaultsPayload || typeof defaultsPayload !== "object") return null;
-  const scoped = defaultsPayload.human;
-  if (!scoped || typeof scoped !== "object" || Array.isArray(scoped)) return null;
-  return normalizeHumanRole((scoped as Record<string, unknown>).role, "operator");
+function grantsFromDefaults(
+  defaultsPayload: Record<string, unknown> | null | undefined,
+  key: "human" | "agent"
+): Array<{
+  permissionKey: (typeof PERMISSION_KEYS)[number];
+  scope: Record<string, unknown> | null;
+}> {
+  if (!defaultsPayload || typeof defaultsPayload !== "object") return [];
+  const scoped = defaultsPayload[key];
+  if (!scoped || typeof scoped !== "object") return [];
+  const grants = (scoped as Record<string, unknown>).grants;
+  if (!Array.isArray(grants)) return [];
+  const validPermissionKeys = new Set<string>(PERMISSION_KEYS);
+  const result: Array<{
+    permissionKey: (typeof PERMISSION_KEYS)[number];
+    scope: Record<string, unknown> | null;
+  }> = [];
+  for (const item of grants) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    if (typeof record.permissionKey !== "string") continue;
+    if (!validPermissionKeys.has(record.permissionKey)) continue;
+    result.push({
+      permissionKey: record.permissionKey as (typeof PERMISSION_KEYS)[number],
+      scope:
+        record.scope &&
+        typeof record.scope === "object" &&
+        !Array.isArray(record.scope)
+          ? (record.scope as Record<string, unknown>)
+          : null
+    });
+  }
+  return result;
 }
 
-function resolveHumanInviteGrants(
+export function agentJoinGrantsFromDefaults(
   defaultsPayload: Record<string, unknown> | null | undefined
 ): Array<{
   permissionKey: (typeof PERMISSION_KEYS)[number];
   scope: Record<string, unknown> | null;
 }> {
-  const explicit = grantsFromDefaults(defaultsPayload, "human");
-  if (explicit.length > 0) return explicit;
-  return grantsForHumanRole(resolveHumanInviteRole(defaultsPayload));
+  const grants = grantsFromDefaults(defaultsPayload, "agent");
+  if (grants.some((grant) => grant.permissionKey === "tasks:assign")) {
+    return grants;
+  }
+  return [
+    ...grants,
+    {
+      permissionKey: "tasks:assign",
+      scope: null
+    }
+  ];
 }
 
 type JoinRequestManagerCandidate = {
@@ -1814,23 +1822,6 @@ export function accessRoutes(
     if (!allowed) throw forbidden("Permission denied");
   }
 
-  function currentCompanyRole(req: Request, companyId: string): HumanCompanyMembershipRole | null {
-    if (isLocalImplicit(req) || req.actor.isInstanceAdmin) return "owner";
-    if (req.actor.type !== "board") return null;
-    const membership = req.actor.memberships?.find((item) => item.companyId === companyId);
-    if (!membership) return null;
-    return normalizeHumanRole(membership.membershipRole, "operator");
-  }
-
-  function canManageCompanyMembers(req: Request, companyId: string) {
-    return currentCompanyRole(req, companyId) === "owner";
-  }
-
-  function canInviteHumanMembers(req: Request, companyId: string) {
-    const role = currentCompanyRole(req, companyId);
-    return role === "owner" || role === "admin";
-  }
-
   async function assertCanGenerateOpenClawInvitePrompt(
     req: Request,
     companyId: string
@@ -1857,7 +1848,6 @@ export function accessRoutes(
     req: Request;
     companyId: string;
     allowedJoinTypes: "human" | "agent" | "both";
-    humanRole?: HumanCompanyMembershipRole | null;
     defaultsPayload?: Record<string, unknown> | null;
     agentMessage?: string | null;
   }) {
@@ -1871,8 +1861,7 @@ export function accessRoutes(
       allowedJoinTypes: input.allowedJoinTypes,
       defaultsPayload: mergeInviteDefaults(
         input.defaultsPayload ?? null,
-        normalizedAgentMessage,
-        input.allowedJoinTypes === "agent" ? null : (input.humanRole ?? "operator")
+        normalizedAgentMessage
       ),
       expiresAt: companyInviteExpiresAt(),
       invitedByUserId: input.req.actor.userId ?? null
@@ -1950,19 +1939,11 @@ export function accessRoutes(
     async (req, res) => {
       const companyId = req.params.companyId as string;
       await assertCompanyPermission(req, companyId, "users:invite");
-      if (
-        req.body.humanRole &&
-        (req.body.humanRole === "owner" || req.body.humanRole === "admin") &&
-        !canManageCompanyMembers(req, companyId)
-      ) {
-        throw forbidden("Owner role required to invite admins or owners");
-      }
       const { token, created, normalizedAgentMessage } =
         await createCompanyInviteForCompany({
           req,
           companyId,
           allowedJoinTypes: req.body.allowedJoinTypes,
-          humanRole: req.body.humanRole ?? null,
           defaultsPayload: req.body.defaultsPayload ?? null,
           agentMessage: req.body.agentMessage ?? null
         });
@@ -2240,9 +2221,6 @@ export function accessRoutes(
       ) {
         throw unauthorized("Authenticated user is required");
       }
-      if (inviteAlreadyAccepted && requestType === "human") {
-        throw notFound("Invite not found");
-      }
       if (requestType === "agent" && !req.body.agentName) {
         if (
           !inviteAlreadyAccepted ||
@@ -2335,12 +2313,6 @@ export function accessRoutes(
 
       const actorEmail =
         requestType === "human" ? await resolveActorEmail(db, req) : null;
-      const humanRole =
-        requestType === "human"
-          ? resolveHumanInviteRole(
-              invite.defaultsPayload as Record<string, unknown> | null
-            )
-          : null;
       const created = !inviteAlreadyAccepted
         ? await db.transaction(async (tx) => {
             await tx
@@ -2354,14 +2326,13 @@ export function accessRoutes(
                 )
               );
 
-            const autoApproveHuman = requestType === "human";
             const row = await tx
               .insert(joinRequests)
               .values({
                 inviteId: invite.id,
                 companyId,
                 requestType,
-                status: autoApproveHuman ? "approved" : "pending_approval",
+                status: "pending_approval",
                 requestIp: requestIp(req),
                 requestingUserId:
                   requestType === "human"
@@ -2378,11 +2349,7 @@ export function accessRoutes(
                 agentDefaultsPayload:
                   requestType === "agent" ? joinDefaults.normalized : null,
                 claimSecretHash,
-                claimSecretExpiresAt,
-                approvedByUserId: autoApproveHuman
-                  ? req.actor.userId ?? "local-board"
-                  : null,
-                approvedAt: autoApproveHuman ? new Date() : null,
+                claimSecretExpiresAt
               })
               .returning()
               .then((rows) => rows[0]);
@@ -2415,29 +2382,6 @@ export function accessRoutes(
 
       if (!created) {
         throw conflict("Join request not found");
-      }
-
-      if (
-        requestType === "human" &&
-        created.status === "approved" &&
-        created.requestingUserId
-      ) {
-        await access.ensureMembership(
-          companyId,
-          "user",
-          created.requestingUserId,
-          humanRole ?? "operator",
-          "active"
-        );
-        await access.setPrincipalGrants(
-          companyId,
-          "user",
-          created.requestingUserId,
-          resolveHumanInviteGrants(
-            invite.defaultsPayload as Record<string, unknown> | null
-          ),
-          req.actor.userId ?? "local-board"
-        );
       }
 
       if (
@@ -2549,12 +2493,9 @@ export function accessRoutes(
             ? req.actor.agentId ?? "invite-agent"
             : req.actor.userId ??
               (requestType === "agent" ? "invite-anon" : "board"),
-        action:
-          requestType === "human"
-            ? "join.accepted"
-            : inviteAlreadyAccepted
-              ? "join.request_replayed"
-              : "join.requested",
+        action: inviteAlreadyAccepted
+          ? "join.request_replayed"
+          : "join.requested",
         entityType: "join_request",
         entityId: created.id,
         details: {
@@ -2930,107 +2871,10 @@ export function accessRoutes(
 
   router.get("/companies/:companyId/members", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId);
-    const members = (await access.listMembers(companyId)).filter(
-      (member) => member.principalType === "user"
-    );
-    const userIds = Array.from(
-      new Set(members.map((member) => member.principalId))
-    );
-    const users = userIds.length
-      ? await db
-          .select({ id: authUsers.id, email: authUsers.email, name: authUsers.name })
-          .from(authUsers)
-          .where(inArray(authUsers.id, userIds))
-      : [];
-    const usersById = new Map(users.map((user) => [user.id, user]));
-    res.json({
-      members: members.map((member) => ({
-        ...member,
-        membershipRole: normalizeHumanRole(member.membershipRole, "operator"),
-        user: usersById.get(member.principalId) ?? null,
-      })),
-      access: {
-        currentUserRole: currentCompanyRole(req, companyId),
-        canManageMembers: canManageCompanyMembers(req, companyId),
-        canInviteUsers: canInviteHumanMembers(req, companyId),
-      },
-    });
+    await assertCompanyPermission(req, companyId, "users:manage_permissions");
+    const members = await access.listMembers(companyId);
+    res.json(members);
   });
-
-  router.patch(
-    "/companies/:companyId/members/:memberId",
-    validate(updateCompanyMemberSchema),
-    async (req, res) => {
-      const companyId = req.params.companyId as string;
-      const memberId = req.params.memberId as string;
-      assertCompanyAccess(req, companyId);
-      if (req.actor.type !== "board") throw unauthorized();
-      if (!canManageCompanyMembers(req, companyId)) {
-        throw forbidden("Owner role required");
-      }
-
-      const existing = await access.getMemberById(companyId, memberId);
-      if (!existing) throw notFound("Member not found");
-      if (existing.principalType !== "user") {
-        throw badRequest("Only human members can be updated");
-      }
-
-      const currentRole = normalizeHumanRole(existing.membershipRole, "operator");
-      const nextRole =
-        req.body.membershipRole !== undefined
-          ? normalizeHumanRole(req.body.membershipRole, currentRole)
-          : currentRole;
-      const nextStatus = req.body.status ?? existing.status;
-      const allMembers = (await access.listMembers(companyId)).filter(
-        (member) =>
-          member.principalType === "user" &&
-          member.status === "active" &&
-          normalizeHumanRole(member.membershipRole, "operator") === "owner"
-      );
-      const removingLastOwner =
-        existing.status === "active" &&
-        currentRole === "owner" &&
-        (nextStatus !== "active" || nextRole !== "owner") &&
-        allMembers.length <= 1;
-      if (removingLastOwner) {
-        throw conflict("Cannot remove the last active owner");
-      }
-
-      const updated = await access.updateMember(companyId, memberId, {
-        membershipRole: nextRole,
-        status: nextStatus,
-      });
-      if (!updated) throw notFound("Member not found");
-
-      await access.setPrincipalGrants(
-        companyId,
-        "user",
-        updated.principalId,
-        grantsForHumanRole(nextRole),
-        req.actor.userId ?? "local-board"
-      );
-
-      await logActivity(db, {
-        companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
-        action: "member.updated",
-        entityType: "membership",
-        entityId: updated.id,
-        details: {
-          principalId: updated.principalId,
-          membershipRole: nextRole,
-          status: nextStatus,
-        },
-      });
-
-      res.json({
-        ...updated,
-        membershipRole: nextRole,
-      });
-    }
-  );
 
   router.patch(
     "/companies/:companyId/members/:memberId/permissions",

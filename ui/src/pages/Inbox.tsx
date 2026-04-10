@@ -18,7 +18,13 @@ import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useGeneralSettings } from "../context/GeneralSettingsContext";
 import { useSidebar } from "../context/SidebarContext";
 import { queryKeys } from "../lib/queryKeys";
-import { createIssueDetailLocationState, createIssueDetailPath } from "../lib/issueDetailBreadcrumb";
+import {
+  armIssueDetailInboxQuickArchive,
+  createIssueDetailLocationState,
+  createIssueDetailPath,
+  rememberIssueDetailLocationState,
+} from "../lib/issueDetailBreadcrumb";
+import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import {
@@ -78,8 +84,16 @@ import {
   getInboxKeyboardSelectionIndex,
   getLatestFailedRunsByAgent,
   getRecentTouchedIssues,
+  isInboxEntityDismissed,
   isMineInboxTab,
+  loadInboxIssueColumns,
+  loadInboxNesting,
+  normalizeInboxIssueColumns,
+  resolveInboxNestingEnabled,
+  resolveIssueWorkspaceName,
   resolveInboxSelectionIndex,
+  saveInboxIssueColumns,
+  saveInboxNesting,
   InboxApprovalFilter,
   type InboxIssueColumn,
   saveLastInboxTab,
@@ -101,6 +115,11 @@ type InboxCategoryFilter =
 type SectionKey =
   | "work_items"
   | "alerts";
+
+/** A flat navigation entry for keyboard j/k traversal that includes expanded children. */
+type NavEntry =
+  | { type: "top"; index: number; item: InboxWorkItem }
+  | { type: "child"; parentIndex: number; issue: Issue };
 
 function firstNonEmptyLine(value: string | null | undefined): string | null {
   if (!value) return null;
@@ -131,67 +150,6 @@ function readIssueIdFromRun(run: HeartbeatRun): string | null {
 
 
 type NonIssueUnreadState = "visible" | "fading" | "hidden" | null;
-const selectedInboxAccentClass = "!text-muted-foreground !border-muted-foreground";
-
-function getSelectedUnreadButtonClass(selected: boolean): string {
-  return selected ? "hover:bg-muted/80" : "hover:bg-blue-500/20";
-}
-
-function getSelectedUnreadDotClass(selected: boolean): string {
-  return selected ? "bg-muted-foreground/70" : "bg-blue-600 dark:bg-blue-400";
-}
-
-export function InboxIssueMetaLeading({
-  issue,
-  selected,
-  isLive,
-}: {
-  issue: Issue;
-  selected: boolean;
-  isLive: boolean;
-}) {
-  return (
-    <>
-      <span className="hidden shrink-0 sm:inline-flex">
-        <StatusIcon
-          status={issue.status}
-          className={selected ? selectedInboxAccentClass : undefined}
-        />
-      </span>
-      <span className="shrink-0 font-mono text-xs text-muted-foreground">
-        {issue.identifier ?? issue.id.slice(0, 8)}
-      </span>
-      {isLive && (
-        <span
-          className={cn(
-            "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 sm:gap-1.5 sm:px-2",
-            selected ? "bg-muted" : "bg-blue-500/10",
-          )}
-        >
-          <span className="relative flex h-2 w-2">
-            {!selected ? (
-              <span className="absolute inline-flex h-full w-full animate-pulse rounded-full bg-blue-400 opacity-75" />
-            ) : null}
-            <span
-              className={cn(
-                "relative inline-flex h-2 w-2 rounded-full",
-                selected ? "bg-muted-foreground/70" : "bg-blue-500",
-              )}
-            />
-          </span>
-          <span
-            className={cn(
-              "hidden text-[11px] font-medium sm:inline",
-              selected ? "text-muted-foreground" : "text-blue-600 dark:text-blue-400",
-            )}
-          >
-            Live
-          </span>
-        </span>
-      )}
-    </>
-  );
-}
 
 export function FailedRunInboxRow({
   run,
@@ -242,13 +200,13 @@ export function FailedRunInboxRow({
                 onClick={onMarkRead}
                 className={cn(
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
-                  getSelectedUnreadButtonClass(selected),
+                  "hover:bg-blue-500/20",
                 )}
                 aria-label="Mark as read"
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
-                  getSelectedUnreadDotClass(selected),
+                  "bg-blue-600 dark:bg-blue-400",
                   unreadState === "fading" ? "opacity-0" : "opacity-100",
                 )} />
               </button>
@@ -398,13 +356,13 @@ function ApprovalInboxRow({
                 onClick={onMarkRead}
                 className={cn(
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
-                  getSelectedUnreadButtonClass(selected),
+                  "hover:bg-blue-500/20",
                 )}
                 aria-label="Mark as read"
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
-                  getSelectedUnreadDotClass(selected),
+                  "bg-blue-600 dark:bg-blue-400",
                   unreadState === "fading" ? "opacity-0" : "opacity-100",
                 )} />
               </button>
@@ -537,13 +495,13 @@ function JoinRequestInboxRow({
                 onClick={onMarkRead}
                 className={cn(
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
-                  getSelectedUnreadButtonClass(selected),
+                  "hover:bg-blue-500/20",
                 )}
                 aria-label="Mark as read"
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
-                  getSelectedUnreadDotClass(selected),
+                  "bg-blue-600 dark:bg-blue-400",
                   unreadState === "fading" ? "opacity-0" : "opacity-100",
                 )} />
               </button>
@@ -638,7 +596,9 @@ export function Inbox() {
   const [searchQuery, setSearchQuery] = useState("");
   const [allCategoryFilter, setAllCategoryFilter] = useState<InboxCategoryFilter>("everything");
   const [allApprovalFilter, setAllApprovalFilter] = useState<InboxApprovalFilter>("all");
-  const { dismissed, dismiss } = useDismissedInboxItems();
+  const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(loadInboxIssueColumns);
+  const { dismissed: dismissedAlerts, dismiss: dismissAlert } = useDismissedInboxAlerts();
+  const { dismissedAtByKey, dismiss: dismissInboxItem } = useInboxDismissals(selectedCompanyId);
   const { readItems, markRead: markItemRead, markUnread: markItemUnread } = useReadInboxItems();
 
   const pathSegment = location.pathname.split("/").pop() ?? "mine";
@@ -689,6 +649,7 @@ export function Inbox() {
   useEffect(() => {
     saveLastInboxTab(tab);
     setSelectedIndex(-1);
+    setSearchQuery("");
   }, [tab]);
 
   const {
@@ -1261,7 +1222,7 @@ export function Inbox() {
         return next;
       });
     }, 200);
-  }, [dismiss]);
+  }, [dismissAlert, dismissInboxItem]);
 
   const nonIssueUnreadState = (key: string): NonIssueUnreadState => {
     if (!canArchiveFromTab) return null;
@@ -1281,12 +1242,13 @@ export function Inbox() {
 
   // Keep selection valid when the list shape changes, but do not auto-select on initial load.
   useEffect(() => {
-    setSelectedIndex((prev) => resolveInboxSelectionIndex(prev, workItemsToRender.length));
-  }, [workItemsToRender.length]);
+    setSelectedIndex((prev) => resolveInboxSelectionIndex(prev, flatNavItems.length));
+  }, [flatNavItems.length]);
 
   // Use refs for keyboard handler to avoid stale closures
   const kbStateRef = useRef({
-    workItems: workItemsToRender,
+    workItems: nestedWorkItems,
+    flatNavItems,
     selectedIndex,
     canArchive: canArchiveFromTab,
     archivingIssueIds,
@@ -1295,7 +1257,8 @@ export function Inbox() {
     readItems,
   });
   kbStateRef.current = {
-    workItems: workItemsToRender,
+    workItems: nestedWorkItems,
+    flatNavItems,
     selectedIndex,
     canArchive: canArchiveFromTab,
     archivingIssueIds,
@@ -1325,6 +1288,8 @@ export function Inbox() {
 
   // Keyboard shortcuts (mail-client style) — single stable listener using refs
   useEffect(() => {
+    if (!keyboardShortcutsEnabled) return;
+
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented) return;
 
@@ -1332,9 +1297,8 @@ export function Inbox() {
       const target = e.target;
       if (
         !(target instanceof HTMLElement) ||
-        target.closest("input, textarea, select, [contenteditable='true'], [role='textbox'], [role='combobox']") ||
-        target.isContentEditable ||
-        document.querySelector("[role='dialog'], [aria-modal='true']") ||
+        isKeyboardShortcutTextInputTarget(target) ||
+        hasBlockingShortcutDialog(document) ||
         e.metaKey ||
         e.ctrlKey ||
         e.altKey
@@ -1348,75 +1312,94 @@ export function Inbox() {
       // Keyboard shortcuts are only active on the "mine" tab
       if (!st.canArchive) return;
 
-      const itemCount = st.workItems.length;
-      if (itemCount === 0) return;
+      const navItems = st.flatNavItems;
+      const navCount = navItems.length;
+      if (navCount === 0) return;
+
+      /** Resolve the nav entry at selectedIndex to an issue (for child entries) or work item. */
+      const resolveNavEntry = (idx: number): { issue?: Issue; item?: InboxWorkItem } => {
+        const entry = navItems[idx];
+        if (!entry) return {};
+        if (entry.type === "child") return { issue: entry.issue };
+        return { item: entry.item };
+      };
 
       switch (e.key) {
         case "j": {
           e.preventDefault();
-          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, itemCount, "next"));
+          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "next"));
           break;
         }
         case "k": {
           e.preventDefault();
-          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, itemCount, "previous"));
+          setSelectedIndex((prev) => getInboxKeyboardSelectionIndex(prev, navCount, "previous"));
           break;
         }
         case "a":
         case "y": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= itemCount) return;
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
-          const item = st.workItems[st.selectedIndex];
-          if (item.kind === "issue") {
-            if (!st.archivingIssueIds.has(item.issue.id)) {
-              act.archiveIssue(item.issue.id);
-            }
-          } else {
-            const key = getWorkItemKey(item);
-            if (!st.archivingNonIssueIds.has(key)) {
-              act.archiveNonIssue(key);
+          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          if (issue) {
+            if (!st.archivingIssueIds.has(issue.id)) act.archiveIssue(issue.id);
+          } else if (item) {
+            if (item.kind === "issue") {
+              if (!st.archivingIssueIds.has(item.issue.id)) act.archiveIssue(item.issue.id);
+            } else {
+              const key = getWorkItemKey(item);
+              if (!st.archivingNonIssueIds.has(key)) act.archiveNonIssue(key);
             }
           }
           break;
         }
         case "U": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= itemCount) return;
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
-          const item = st.workItems[st.selectedIndex];
-          if (item.kind === "issue") {
-            act.markUnreadIssue(item.issue.id);
-          } else {
-            act.markNonIssueUnread(getWorkItemKey(item));
+          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          if (issue) {
+            act.markUnreadIssue(issue.id);
+          } else if (item) {
+            if (item.kind === "issue") act.markUnreadIssue(item.issue.id);
+            else act.markNonIssueUnread(getWorkItemKey(item));
           }
           break;
         }
         case "r": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= itemCount) return;
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
-          const item = st.workItems[st.selectedIndex];
-          if (item.kind === "issue") {
-            if (item.issue.isUnreadForMe && !st.fadingOutIssues.has(item.issue.id)) {
-              act.markRead(item.issue.id);
-            }
-          } else {
-            const key = getWorkItemKey(item);
-            if (!st.readItems.has(key)) {
-              act.markNonIssueRead(key);
+          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          if (issue) {
+            if (issue.isUnreadForMe && !st.fadingOutIssues.has(issue.id)) act.markRead(issue.id);
+          } else if (item) {
+            if (item.kind === "issue") {
+              if (item.issue.isUnreadForMe && !st.fadingOutIssues.has(item.issue.id)) act.markRead(item.issue.id);
+            } else {
+              const key = getWorkItemKey(item);
+              if (!st.readItems.has(key)) act.markNonIssueRead(key);
             }
           }
           break;
         }
         case "Enter": {
-          if (st.selectedIndex < 0 || st.selectedIndex >= itemCount) return;
+          if (st.selectedIndex < 0 || st.selectedIndex >= navCount) return;
           e.preventDefault();
-          const item = st.workItems[st.selectedIndex];
-          if (item.kind === "issue") {
-            const pathId = item.issue.identifier ?? item.issue.id;
-            act.navigate(createIssueDetailPath(pathId, issueLinkState), { state: issueLinkState });
-          } else if (item.kind === "approval") {
-            act.navigate(`/approvals/${item.approval.id}`);
-          } else if (item.kind === "failed_run") {
-            act.navigate(`/agents/${item.run.agentId}/runs/${item.run.id}`);
+          const { issue, item } = resolveNavEntry(st.selectedIndex);
+          if (issue) {
+            const pathId = issue.identifier ?? issue.id;
+            const detailState = armIssueDetailInboxQuickArchive(issueLinkState);
+            rememberIssueDetailLocationState(pathId, detailState);
+            act.navigate(createIssueDetailPath(pathId), { state: detailState });
+          } else if (item) {
+            if (item.kind === "issue") {
+              const pathId = item.issue.identifier ?? item.issue.id;
+              const detailState = armIssueDetailInboxQuickArchive(issueLinkState);
+              rememberIssueDetailLocationState(pathId, detailState);
+              act.navigate(createIssueDetailPath(pathId), { state: detailState });
+            } else if (item.kind === "approval") {
+              act.navigate(`/approvals/${item.approval.id}`);
+            } else if (item.kind === "failed_run") {
+              act.navigate(`/agents/${item.run.agentId}/runs/${item.run.id}`);
+            }
           }
           break;
         }
@@ -1426,7 +1409,7 @@ export function Inbox() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [getWorkItemKey, issueLinkState]);
+  }, [getWorkItemKey, issueLinkState, keyboardShortcutsEnabled]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -1484,7 +1467,19 @@ export function Inbox() {
   const canMarkAllRead = unreadIssueIds.length > 0;
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between gap-2">
+      <div className="space-y-2">
+        {/* Search — full-width row on mobile, inline on desktop */}
+        <div className="relative sm:hidden">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            placeholder="Search inbox…"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="h-8 w-full pl-8 text-xs"
+          />
+        </div>
+        <div className="flex items-center justify-between gap-2">
         <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
           <PageTabBar
             items={[
@@ -1503,6 +1498,33 @@ export function Inbox() {
         </Tabs>
 
         <div className="flex items-center gap-2">
+          <div className="relative hidden sm:block">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              type="search"
+              placeholder="Search inbox…"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="h-8 w-[220px] pl-8 text-xs"
+            />
+          </div>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
+            onClick={toggleNesting}
+            title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+          >
+            <ListTree className="h-3.5 w-3.5" />
+          </Button>
+          <IssueColumnPicker
+            availableColumns={availableIssueColumns}
+            visibleColumnSet={visibleIssueColumnSet}
+            onToggleColumn={toggleIssueColumn}
+            onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
+            title="Choose which inbox columns stay visible"
+          />
           {canMarkAllRead && (
             <>
               <Button
@@ -1540,6 +1562,7 @@ export function Inbox() {
               </Dialog>
             </>
           )}
+        </div>
         </div>
       </div>
 
@@ -1609,13 +1632,34 @@ export function Inbox() {
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
             <div ref={listRef} className="overflow-hidden rounded-xl border border-border bg-card">
-              {workItemsToRender.flatMap((item, index) => {
+              {(() => {
+                // Pre-compute flat nav index for each top-level item and child issue
+                let flatIdx = 0;
+                const topFlatIndex = new Map<number, number>();
+                const childFlatIndex = new Map<string, number>();
+                for (let ti = 0; ti < nestedWorkItems.length; ti++) {
+                  topFlatIndex.set(ti, flatIdx);
+                  flatIdx++;
+                  const topItem = nestedWorkItems[ti];
+                  if (topItem.kind === "issue") {
+                    const children = childrenByIssueId.get(topItem.issue.id);
+                    const isExp = children?.length && !collapsedInboxParents.has(topItem.issue.id);
+                    if (isExp) {
+                      for (const c of children) {
+                        childFlatIndex.set(c.id, flatIdx);
+                        flatIdx++;
+                      }
+                    }
+                  }
+                }
+                return nestedWorkItems.flatMap((item, index) => {
+                const navIdx = topFlatIndex.get(index) ?? index;
                 const wrapItem = (key: string, isSelected: boolean, child: ReactNode) => (
                   <div
                     key={`sel-${key}`}
                     data-inbox-item
                     className="relative"
-                    onClick={() => setSelectedIndex(index)}
+                    onClick={() => setSelectedIndex(navIdx)}
                   >
                     {child}
                   </div>
@@ -1625,19 +1669,19 @@ export function Inbox() {
                   index > 0 &&
                   item.timestamp > 0 &&
                   item.timestamp < todayCutoff &&
-                  workItemsToRender[index - 1].timestamp >= todayCutoff;
+                  nestedWorkItems[index - 1].timestamp >= todayCutoff;
                 const elements: ReactNode[] = [];
                 if (showTodayDivider) {
                   elements.push(
                     <div key="today-divider" className="flex items-center gap-3 px-4 my-2">
                       <div className="flex-1 border-t border-zinc-600" />
                       <span className="shrink-0 text-[11px] font-medium uppercase tracking-wider text-zinc-500">
-                        Today
+                        Earlier
                       </span>
                     </div>,
                   );
                 }
-                const isSelected = selectedIndex === index;
+                const isSelected = selectedIndex === navIdx;
 
                 if (item.kind === "approval") {
                   const approvalKey = `approval:${item.approval.id}`;
@@ -1749,62 +1793,150 @@ export function Inbox() {
                 }
 
                 const issue = item.issue;
-                const isUnread = issue.isUnreadForMe && !fadingOutIssues.has(issue.id);
-                const isFading = fadingOutIssues.has(issue.id);
-                const isArchiving = archivingIssueIds.has(issue.id);
-                const row = (
-                  <IssueRow
-                    key={`issue:${issue.id}`}
-                    issue={issue}
-                    issueLinkState={issueLinkState}
-                    selected={isSelected}
-                    className={
-                      isArchiving
-                        ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
-                        : "transition-all duration-200 ease-out"
-                    }
-                    desktopMetaLeading={
-                      <InboxIssueMetaLeading
-                        issue={issue}
-                        selected={isSelected}
-                        isLive={liveIssueIds.has(issue.id)}
-                      />
-                    }
-                    mobileMeta={
-                      issue.lastExternalCommentAt
-                        ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
-                        : `updated ${timeAgo(issue.updatedAt)}`
-                    }
-                    unreadState={
-                      isUnread ? "visible" : isFading ? "fading" : "hidden"
-                    }
-                    onMarkRead={() => markReadMutation.mutate(issue.id)}
-                    onArchive={
-                      canArchiveFromTab
-                        ? () => archiveIssueMutation.mutate(issue.id)
-                        : undefined
-                    }
-                    archiveDisabled={isArchiving || archiveIssueMutation.isPending}
-                    trailingMeta={
-                      issue.lastExternalCommentAt
-                        ? `commented ${timeAgo(issue.lastExternalCommentAt)}`
-                        : `updated ${timeAgo(issue.updatedAt)}`
-                    }
-                  />
-                );
+                const childIssues = childrenByIssueId.get(issue.id) ?? [];
+                const hasChildren = childIssues.length > 0;
+                const isExpanded = hasChildren && !collapsedInboxParents.has(issue.id);
 
+                const renderInboxIssue = (iss: Issue, depth: number, sel: boolean) => {
+                  const isUnread = iss.isUnreadForMe && !fadingOutIssues.has(iss.id);
+                  const isFading = fadingOutIssues.has(iss.id);
+                  const isArch = archivingIssueIds.has(iss.id);
+                  const proj = iss.projectId ? projectById.get(iss.projectId) ?? null : null;
+                  return (
+                    <IssueRow
+                      key={`issue:${iss.id}`}
+                      issue={iss}
+                      issueLinkState={issueLinkState}
+                      selected={sel}
+                      className={
+                        isArch
+                          ? "pointer-events-none -translate-x-4 scale-[0.98] opacity-0 transition-all duration-200 ease-out"
+                          : "transition-all duration-200 ease-out"
+                      }
+                      desktopMetaLeading={
+                        <>
+                          {nestingEnabled ? (
+                            depth === 0 && hasChildren ? (
+                              <button
+                                type="button"
+                                className="hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  toggleInboxParentCollapse(issue.id);
+                                }}
+                              >
+                                <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
+                              </button>
+                            ) : (
+                              <span className="hidden w-4 shrink-0 sm:block" />
+                            )
+                          ) : null}
+                          {depth > 0 ? (
+                            <span className="hidden w-4 shrink-0 sm:block" />
+                          ) : null}
+                          <InboxIssueMetaLeading
+                            issue={iss}
+                            isLive={liveIssueIds.has(iss.id)}
+                            showStatus={visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status")}
+                            showIdentifier={visibleIssueColumnSet.has("id") && availableIssueColumnSet.has("id")}
+                          />
+                        </>
+                      }
+                      titleSuffix={hasChildren && !isExpanded && depth === 0 ? (
+                        <span className="ml-1.5 text-xs text-muted-foreground">
+                          ({childIssues.length} sub-task{childIssues.length !== 1 ? "s" : ""})
+                        </span>
+                      ) : undefined}
+                      mobileMeta={issueActivityText(iss).toLowerCase()}
+                      mobileLeading={
+                        depth === 0 && hasChildren ? (
+                          <button type="button" onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            toggleInboxParentCollapse(issue.id);
+                          }}>
+                            <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
+                          </button>
+                        ) : undefined
+                      }
+                      unreadState={
+                        isUnread ? "visible" : isFading ? "fading" : "hidden"
+                      }
+                      onMarkRead={() => markReadMutation.mutate(iss.id)}
+                      onArchive={
+                        canArchiveFromTab
+                          ? () => archiveIssueMutation.mutate(iss.id)
+                          : undefined
+                      }
+                      archiveDisabled={isArch || archiveIssueMutation.isPending}
+                      desktopTrailing={
+                        visibleTrailingIssueColumns.length > 0 ? (
+                          <InboxIssueTrailingColumns
+                            issue={iss}
+                            columns={visibleTrailingIssueColumns}
+                            projectName={proj?.name ?? null}
+                            projectColor={proj?.color ?? null}
+                            workspaceName={resolveIssueWorkspaceName(iss, {
+                              executionWorkspaceById,
+                              projectWorkspaceById,
+                              defaultProjectWorkspaceIdByProjectId,
+                            })}
+                            assigneeName={agentName(iss.assigneeAgentId)}
+                            currentUserId={currentUserId}
+                            parentIdentifier={iss.parentId ? (issueById.get(iss.parentId)?.identifier ?? null) : null}
+                            parentTitle={iss.parentId ? (issueById.get(iss.parentId)?.title ?? null) : null}
+                          />
+                        ) : undefined
+                      }
+                    />
+                  );
+                };
+
+                // Render parent issue
+                const parentRow = renderInboxIssue(issue, 0, isSelected);
                 elements.push(wrapItem(`issue:${issue.id}`, isSelected, canArchiveFromTab ? (
                   <SwipeToArchive
                     key={`issue:${issue.id}`}
                     selected={isSelected}
-                    disabled={isArchiving || archiveIssueMutation.isPending}
+                    disabled={archivingIssueIds.has(issue.id) || archiveIssueMutation.isPending}
                     onArchive={() => archiveIssueMutation.mutate(issue.id)}
                   >
                     {parentRow}
                   </SwipeToArchive>
-                ) : row));
+                ) : parentRow));
+
+                // Render children if expanded
+                if (isExpanded) {
+                  for (const child of childIssues) {
+                    const cNavIdx = childFlatIndex.get(child.id) ?? -1;
+                    const isChildSelected = selectedIndex === cNavIdx;
+                    const childRow = renderInboxIssue(child, 1, isChildSelected);
+                    const isChildArchiving = archivingIssueIds.has(child.id);
+                    elements.push(
+                      <div
+                        key={`sel-issue:${child.id}`}
+                        data-inbox-item
+                        className="relative"
+                        onClick={() => setSelectedIndex(cNavIdx)}
+                      >
+                        {canArchiveFromTab ? (
+                          <SwipeToArchive
+                            key={`issue:${child.id}`}
+                            selected={isChildSelected}
+                            disabled={isChildArchiving || archiveIssueMutation.isPending}
+                            onArchive={() => archiveIssueMutation.mutate(child.id)}
+                          >
+                            {childRow}
+                          </SwipeToArchive>
+                        ) : childRow}
+                      </div>,
+                    );
+                  }
+                }
                 return elements;
-              })}
+              });
+              })()}
             </div>
           </div>
         </>

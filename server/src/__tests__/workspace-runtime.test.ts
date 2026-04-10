@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { parse as parseEnvContents } from "dotenv";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
@@ -12,6 +13,7 @@ import {
   createDb,
   executionWorkspaces,
   heartbeatRuns,
+  projectWorkspaces,
   projects,
   workspaceRuntimeServices,
 } from "@paperclipai/db";
@@ -25,6 +27,7 @@ import {
   realizeExecutionWorkspace,
   releaseRuntimeServicesForRun,
   resetRuntimeServicesForTests,
+  resolveShell,
   sanitizeRuntimeServiceBaseEnv,
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
@@ -48,6 +51,7 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres workspace-runtime tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+const provisionWorktreeScriptPath = new URL("../../../scripts/provision-worktree.sh", import.meta.url);
 
 async function runGit(cwd: string, args: string[]) {
   await execFileAsync("git", args, { cwd });
@@ -184,6 +188,116 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
   });
 });
 
+describe("ensureServerWorkspaceLinksCurrent", () => {
+  it("relinks stale server workspace dependencies inside the current repo root", async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-"));
+    const staleRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-stale-"));
+    const serverNodeModulesScopeDir = path.join(repoRoot, "server", "node_modules", "@paperclipai");
+    const expectedPackageDir = path.join(repoRoot, "packages", "db");
+    const stalePackageDir = path.join(staleRoot, "db");
+
+    await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
+    await fs.mkdir(expectedPackageDir, { recursive: true });
+    await fs.mkdir(stalePackageDir, { recursive: true });
+    await fs.mkdir(serverNodeModulesScopeDir, { recursive: true });
+    await fs.writeFile(path.join(repoRoot, ".git"), "gitdir: /tmp/paperclip-main/.git/worktrees/runtime-links\n", "utf8");
+    await fs.writeFile(path.join(repoRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n  - server\n", "utf8");
+    await fs.writeFile(
+      path.join(repoRoot, "server", "package.json"),
+      JSON.stringify({
+        name: "@paperclipai/server",
+        dependencies: {
+          "@paperclipai/db": "workspace:*",
+        },
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(expectedPackageDir, "package.json"),
+      JSON.stringify({ name: "@paperclipai/db" }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(stalePackageDir, "package.json"),
+      JSON.stringify({ name: "@paperclipai/db" }),
+      "utf8",
+    );
+    await fs.symlink(stalePackageDir, path.join(serverNodeModulesScopeDir, "db"));
+
+    await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"));
+    expect(await fs.realpath(path.join(serverNodeModulesScopeDir, "db"))).toBe(await fs.realpath(expectedPackageDir));
+  });
+
+  it("skips relinking when server workspace dependencies already point at the repo", async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-current-"));
+    const serverNodeModulesScopeDir = path.join(repoRoot, "server", "node_modules", "@paperclipai");
+    const expectedPackageDir = path.join(repoRoot, "packages", "db");
+
+    await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
+    await fs.mkdir(expectedPackageDir, { recursive: true });
+    await fs.mkdir(serverNodeModulesScopeDir, { recursive: true });
+    await fs.writeFile(path.join(repoRoot, ".git"), "gitdir: /tmp/paperclip-main/.git/worktrees/runtime-links-current\n", "utf8");
+    await fs.writeFile(path.join(repoRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n  - server\n", "utf8");
+    await fs.writeFile(
+      path.join(repoRoot, "server", "package.json"),
+      JSON.stringify({
+        name: "@paperclipai/server",
+        dependencies: {
+          "@paperclipai/db": "workspace:*",
+        },
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(expectedPackageDir, "package.json"),
+      JSON.stringify({ name: "@paperclipai/db" }),
+      "utf8",
+    );
+    await fs.symlink(expectedPackageDir, path.join(serverNodeModulesScopeDir, "db"));
+
+    await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"));
+  });
+
+  it("skips relinking outside linked git worktrees", async () => {
+    const repoRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-non-worktree-"));
+    const staleRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-links-non-worktree-stale-"));
+    const serverNodeModulesScopeDir = path.join(repoRoot, "server", "node_modules", "@paperclipai");
+    const expectedPackageDir = path.join(repoRoot, "packages", "db");
+    const stalePackageDir = path.join(staleRoot, "db");
+
+    await fs.mkdir(path.join(repoRoot, ".git"), { recursive: true });
+    await fs.mkdir(path.join(repoRoot, "server"), { recursive: true });
+    await fs.mkdir(expectedPackageDir, { recursive: true });
+    await fs.mkdir(stalePackageDir, { recursive: true });
+    await fs.mkdir(serverNodeModulesScopeDir, { recursive: true });
+    await fs.writeFile(path.join(repoRoot, "pnpm-workspace.yaml"), "packages:\n  - packages/*\n  - server\n", "utf8");
+    await fs.writeFile(
+      path.join(repoRoot, "server", "package.json"),
+      JSON.stringify({
+        name: "@paperclipai/server",
+        dependencies: {
+          "@paperclipai/db": "workspace:*",
+        },
+      }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(expectedPackageDir, "package.json"),
+      JSON.stringify({ name: "@paperclipai/db" }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(stalePackageDir, "package.json"),
+      JSON.stringify({ name: "@paperclipai/db" }),
+      "utf8",
+    );
+    await fs.symlink(stalePackageDir, path.join(serverNodeModulesScopeDir, "db"));
+
+    await ensureServerWorkspaceLinksCurrent(path.join(repoRoot, "server"));
+    expect(await fs.realpath(path.join(serverNodeModulesScopeDir, "db"))).toBe(await fs.realpath(stalePackageDir));
+  });
+});
+
 describe("realizeExecutionWorkspace", () => {
   it("creates and reuses a git worktree for an issue-scoped branch", async () => {
     const repoRoot = await createTempRepo();
@@ -288,6 +402,40 @@ describe("realizeExecutionWorkspace", () => {
     );
     expect(realized.branchName?.includes("/")).toBe(false);
     expect(path.basename(realized.cwd)).toBe(realized.branchName);
+  });
+
+  it("preserves intentional slashes and dots from the branch template", async () => {
+    const repoRoot = await createTempRepo();
+
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "release/{{issue.identifier}}.{{slug}}",
+        },
+      },
+      issue: {
+        id: "issue-template-safe",
+        identifier: "PAP-992",
+        title: "Hotfix / April.1",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(realized.branchName).toBe("release/PAP-992.hotfix-april-1");
+    expect(path.basename(realized.cwd)).toBe("PAP-992.hotfix-april-1");
   });
 
   it("runs a configured provision command inside the derived worktree", async () => {
@@ -1738,6 +1886,60 @@ describe("ensureRuntimeServicesForRun", () => {
   });
 });
 
+describe("resolveShell (shell fallback)", () => {
+  const originalShell = process.env.SHELL;
+  const originalPlatform = process.platform;
+
+  afterEach(() => {
+    if (originalShell !== undefined) {
+      process.env.SHELL = originalShell;
+    } else {
+      delete process.env.SHELL;
+    }
+    Object.defineProperty(process, "platform", { value: originalPlatform });
+  });
+
+  it("returns process.env.SHELL when set", () => {
+    process.env.SHELL = "/usr/bin/zsh";
+    expect(resolveShell()).toBe("/usr/bin/zsh");
+  });
+
+  it("trims whitespace from SHELL env var", () => {
+    process.env.SHELL = "  /usr/bin/fish  ";
+    expect(resolveShell()).toBe("/usr/bin/fish");
+  });
+
+  it("falls back to /bin/sh on non-Windows when SHELL is unset", () => {
+    delete process.env.SHELL;
+    Object.defineProperty(process, "platform", { value: "linux" });
+    expect(resolveShell()).toBe("/bin/sh");
+  });
+
+  it("falls back to sh (bare) on Windows when SHELL is unset", () => {
+    delete process.env.SHELL;
+    Object.defineProperty(process, "platform", { value: "win32" });
+    expect(resolveShell()).toBe("sh");
+  });
+
+  it("falls back to /bin/sh on darwin when SHELL is unset", () => {
+    delete process.env.SHELL;
+    Object.defineProperty(process, "platform", { value: "darwin" });
+    expect(resolveShell()).toBe("/bin/sh");
+  });
+
+  it("treats empty SHELL as unset and uses platform fallback", () => {
+    process.env.SHELL = "";
+    Object.defineProperty(process, "platform", { value: "linux" });
+    expect(resolveShell()).toBe("/bin/sh");
+  });
+
+  it("treats whitespace-only SHELL as unset and uses platform fallback", () => {
+    process.env.SHELL = "   ";
+    Object.defineProperty(process, "platform", { value: "win32" });
+    expect(resolveShell()).toBe("sh");
+  });
+});
+
 describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -1754,6 +1956,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   afterEach(async () => {
     await db.delete(workspaceRuntimeServices);
     await db.delete(executionWorkspaces);
+    await db.delete(projectWorkspaces);
     await db.delete(projects);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -1866,6 +2069,96 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     });
 
     await expect(fetch(service!.url!)).rejects.toThrow();
+  });
+
+  it("marks persisted local services stopped when the registry pid is stale", async () => {
+    const companyId = randomUUID();
+    const runtimeServiceId = randomUUID();
+    const startedAt = new Date("2026-04-04T17:00:00.000Z");
+    const updatedAt = new Date("2026-04-04T17:10:00.000Z");
+    const projectId = randomUUID();
+    const projectWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Runtime reconcile test",
+      status: "in_progress",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: projectWorkspaceId,
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      cwd: "/tmp/paperclip-primary",
+      isPrimary: true,
+    });
+    await db.insert(workspaceRuntimeServices).values({
+      id: runtimeServiceId,
+      companyId,
+      projectId,
+      projectWorkspaceId,
+      executionWorkspaceId: null,
+      issueId: null,
+      scopeType: "project_workspace",
+      scopeId: projectWorkspaceId,
+      serviceName: "paperclip-dev",
+      status: "running",
+      lifecycle: "shared",
+      reuseKey: `project_workspace:${projectWorkspaceId}:paperclip-dev`,
+      command: "pnpm dev",
+      cwd: "/tmp/paperclip-primary",
+      port: 49195,
+      url: "http://127.0.0.1:49195",
+      provider: "local_process",
+      providerRef: "999999",
+      ownerAgentId: null,
+      startedByRunId: null,
+      lastUsedAt: updatedAt,
+      startedAt,
+      stoppedAt: null,
+      stopPolicy: { type: "manual" },
+      healthStatus: "healthy",
+      createdAt: startedAt,
+      updatedAt,
+    });
+    await writeLocalServiceRegistryRecord({
+      version: 1,
+      serviceKey: "workspace-runtime-paperclip-dev-stale",
+      profileKind: "workspace-runtime",
+      serviceName: "paperclip-dev",
+      command: "pnpm dev",
+      cwd: "/tmp/paperclip-primary",
+      envFingerprint: "fingerprint",
+      port: 49195,
+      url: "http://127.0.0.1:49195",
+      pid: 999999,
+      processGroupId: 999999,
+      provider: "local_process",
+      runtimeServiceId,
+      reuseKey: `project_workspace:${projectWorkspaceId}:paperclip-dev`,
+      startedAt: startedAt.toISOString(),
+      lastSeenAt: updatedAt.toISOString(),
+      metadata: null,
+    });
+
+    const result = await reconcilePersistedRuntimeServicesOnStartup(db);
+
+    expect(result).toMatchObject({ reconciled: 1, adopted: 0, stopped: 1 });
+    const persisted = await db
+      .select()
+      .from(workspaceRuntimeServices)
+      .where(eq(workspaceRuntimeServices.id, runtimeServiceId))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted?.status).toBe("stopped");
+    expect(persisted?.stoppedAt).not.toBeNull();
   });
 
   it("persists controlled execution workspace stops as stopped", async () => {
