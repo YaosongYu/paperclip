@@ -491,7 +491,7 @@ describe("IssuesList", () => {
     });
   });
 
-  it("hides routine-backed issues by default and reveals them when the routine filter is enabled", async () => {
+  it("shows routine-backed issues by default and hides them when the routine filter is toggled off", async () => {
     const manualIssue = createIssue({
       id: "issue-manual",
       identifier: "PAP-10",
@@ -519,7 +519,7 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Manual issue");
-      expect(container.textContent).not.toContain("Routine issue");
+      expect(container.textContent).toContain("Routine issue");
     });
 
     await act(async () => {
@@ -546,7 +546,7 @@ describe("IssuesList", () => {
     });
 
     await waitForAssertion(() => {
-      expect(container.textContent).toContain("Routine issue");
+      expect(container.textContent).not.toContain("Routine issue");
     });
 
     act(() => {

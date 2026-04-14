@@ -142,7 +142,7 @@ function normalizeIssueFilterState(value: unknown): IssueFilterState {
     labels: normalizeStringArray(candidate.labels),
     projects: normalizeStringArray(candidate.projects),
     workspaces: normalizeStringArray(candidate.workspaces),
-    showRoutineExecutions: candidate.showRoutineExecutions === true,
+    showRoutineExecutions: candidate.showRoutineExecutions !== false,
   };
 }
 

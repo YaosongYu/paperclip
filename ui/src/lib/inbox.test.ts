@@ -849,7 +849,7 @@ describe("inbox helpers", () => {
         labels: [],
         projects: ["project-1"],
         workspaces: ["workspace-1"],
-        showRoutineExecutions: false,
+        showRoutineExecutions: true,
       },
     });
   });

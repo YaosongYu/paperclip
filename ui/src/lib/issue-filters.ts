@@ -17,7 +17,7 @@ export const defaultIssueFilterState: IssueFilterState = {
   labels: [],
   projects: [],
   workspaces: [],
-  showRoutineExecutions: false,
+  showRoutineExecutions: true,
 };
 
 export const issueStatusOrder = ["in_progress", "todo", "backlog", "in_review", "blocked", "done", "cancelled"];
@@ -99,6 +99,6 @@ export function countActiveIssueFilters(
   if (state.labels.length > 0) count += 1;
   if (state.projects.length > 0) count += 1;
   if (state.workspaces.length > 0) count += 1;
-  if (enableRoutineVisibilityFilter && state.showRoutineExecutions) count += 1;
+  if (enableRoutineVisibilityFilter && !state.showRoutineExecutions) count += 1;
   return count;
 }
