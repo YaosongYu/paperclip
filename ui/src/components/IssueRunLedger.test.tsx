@@ -146,10 +146,10 @@ describe("IssueRunLedger", () => {
     expect(container.textContent).toContain("Completed");
     expect(container.textContent).toContain("Needs follow-up");
     expect(container.textContent).toContain("Exhausted");
-    expect(container.textContent).toContain("continuation 3");
+    expect(container.textContent).toContain("Continuation attempt 3");
   });
 
-  it("renders historical runs without liveness metadata", () => {
+  it("renders historical runs without liveness metadata as unavailable", () => {
     renderLedger({
       runs: [
         createRun({
@@ -163,9 +163,33 @@ describe("IssueRunLedger", () => {
       ],
     });
 
-    expect(container.textContent).toContain("Liveness pending");
-    expect(container.textContent).toContain("Stop not recorded");
-    expect(container.textContent).toContain("Last useful action none recorded");
+    expect(container.textContent).toContain("No liveness data");
+    expect(container.textContent).toContain("Stop Unavailable");
+    expect(container.textContent).toContain("Last useful action Unavailable");
+  });
+
+  it("shows live runs as pending final checks without missing-data language", () => {
+    renderLedger({
+      runs: [
+        createRun({
+          status: "running",
+          finishedAt: null,
+          livenessState: null,
+          livenessReason: null,
+          continuationAttempt: 0,
+          lastUsefulActionAt: null,
+          nextAction: null,
+          resultJson: null,
+        }),
+      ],
+    });
+
+    expect(container.textContent).toContain("Running now by CodexCoder");
+    expect(container.textContent).toContain("Checks after finish");
+    expect(container.textContent).toContain("Last useful action No action recorded yet");
+    expect(container.textContent).toContain("Stop Still running");
+    expect(container.textContent).not.toContain("Liveness pending");
+    expect(container.textContent).not.toContain("initial attempt");
   });
 
   it("shows timeout, cancel, and budget stop reasons without raw logs", () => {

@@ -723,7 +723,10 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
 
 type IssueDetailActivityTabProps = {
   issueId: string;
+  issueStatus: Issue["status"];
+  childIssues: Issue[];
   agentMap: Map<string, Agent>;
+  hasLiveRuns: boolean;
   currentUserId: string | null;
   userProfileMap: Map<string, import("../lib/company-members").CompanyUserProfile>;
   pendingApprovalAction: { approvalId: string; action: "approve" | "reject" } | null;
@@ -732,7 +735,10 @@ type IssueDetailActivityTabProps = {
 
 function IssueDetailActivityTab({
   issueId,
+  issueStatus,
+  childIssues,
   agentMap,
+  hasLiveRuns,
   currentUserId,
   userProfileMap,
   pendingApprovalAction,
@@ -801,6 +807,15 @@ function IssueDetailActivityTab({
 
   return (
     <>
+      <div className="mb-3">
+        <IssueRunLedger
+          issueId={issueId}
+          issueStatus={issueStatus}
+          childIssues={childIssues}
+          agentMap={agentMap}
+          hasLiveRuns={hasLiveRuns}
+        />
+      </div>
       {linkedApprovals && linkedApprovals.length > 0 && (
         <div className="mb-3 space-y-3">
           {linkedApprovals.map((approval) => (
@@ -2595,14 +2610,6 @@ export function IssueDetail() {
         onOpenChange={setGalleryOpen}
       />
 
-      <IssueRunLedger
-        issueId={issue.id}
-        issueStatus={issue.status}
-        childIssues={childIssues}
-        agentMap={agentMap}
-        hasLiveRuns={hasLiveRuns}
-      />
-
       <IssueWorkspaceCard
         issue={issue}
         project={resolvedProject}
@@ -2670,7 +2677,10 @@ export function IssueDetail() {
           {detailTab === "activity" ? (
             <IssueDetailActivityTab
               issueId={issue.id}
+              issueStatus={issue.status}
+              childIssues={childIssues}
               agentMap={agentMap}
+              hasLiveRuns={hasLiveRuns}
               currentUserId={currentUserId}
               userProfileMap={userProfileMap}
               pendingApprovalAction={pendingApprovalAction}

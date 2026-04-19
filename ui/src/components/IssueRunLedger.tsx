@@ -30,7 +30,13 @@ type LedgerRun = RunForIssue & {
   agentName?: string;
 };
 
-const LIVENESS_COPY: Record<RunLivenessState, { label: string; tone: string; description: string }> = {
+type LivenessCopy = {
+  label: string;
+  tone: string;
+  description: string;
+};
+
+const LIVENESS_COPY: Record<RunLivenessState, LivenessCopy> = {
   completed: {
     label: "Completed",
     tone: "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
@@ -68,7 +74,20 @@ const LIVENESS_COPY: Record<RunLivenessState, { label: string; tone: string; des
   },
 };
 
+const PENDING_LIVENESS_COPY: LivenessCopy = {
+  label: "Checks after finish",
+  tone: "border-border bg-background text-muted-foreground",
+  description: "Liveness is evaluated after the run finishes.",
+};
+
+const MISSING_LIVENESS_COPY: LivenessCopy = {
+  label: "No liveness data",
+  tone: "border-border bg-background text-muted-foreground",
+  description: "This run has no persisted liveness classification.",
+};
+
 const TERMINAL_CHILD_STATUSES = new Set<Issue["status"]>(["done", "cancelled"]);
+const ACTIVE_RUN_STATUSES = new Set(["queued", "running"]);
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
@@ -147,6 +166,22 @@ function statusLabel(status: string) {
   return status.replace(/_/g, " ");
 }
 
+function isActiveRun(run: Pick<LedgerRun, "status" | "isLive">) {
+  return run.isLive || ACTIVE_RUN_STATUSES.has(run.status);
+}
+
+function runSummary(run: LedgerRun, agentMap: ReadonlyMap<string, Pick<Agent, "name">>) {
+  const agentName = compactAgentName(run, agentMap);
+  if (run.status === "running") return `Running now by ${agentName}`;
+  if (run.status === "queued") return `Queued for ${agentName}`;
+  return `${statusLabel(run.status)} by ${agentName}`;
+}
+
+function livenessCopyForRun(run: LedgerRun) {
+  if (run.livenessState) return LIVENESS_COPY[run.livenessState];
+  return isActiveRun(run) ? PENDING_LIVENESS_COPY : MISSING_LIVENESS_COPY;
+}
+
 function stopReasonLabel(run: RunForIssue) {
   const result = asRecord(run.resultJson);
   const stopReason = readString(result?.stopReason);
@@ -165,6 +200,30 @@ function stopReasonLabel(run: RunForIssue) {
   if (stopReason === "adapter_failed") return "adapter failed";
   if (stopReason === "completed") return timeoutText ? `completed (${timeoutText})` : "completed";
   return timeoutText;
+}
+
+function stopStatusLabel(run: LedgerRun, stopReason: string | null) {
+  if (stopReason) return stopReason;
+  if (run.status === "queued") return "Waiting to start";
+  if (run.status === "running") return "Still running";
+  if (!run.livenessState) return "Unavailable";
+  return "No stop reason";
+}
+
+function lastUsefulActionLabel(run: LedgerRun) {
+  if (run.lastUsefulActionAt) return relativeTime(run.lastUsefulActionAt);
+  if (isActiveRun(run)) return "No action recorded yet";
+  if (run.livenessState === "plan_only" || run.livenessState === "needs_followup") {
+    return "No concrete action";
+  }
+  if (run.livenessState === "empty_response") return "No useful output";
+  if (!run.livenessState) return "Unavailable";
+  return "None recorded";
+}
+
+function continuationLabel(run: LedgerRun) {
+  if (!run.continuationAttempt || run.continuationAttempt <= 0) return null;
+  return `Continuation attempt ${run.continuationAttempt}`;
 }
 
 function hasExhaustedContinuation(run: RunForIssue) {
@@ -241,7 +300,7 @@ export function IssueRunLedgerContent({
           <h3 className="text-sm font-medium text-muted-foreground">Run ledger</h3>
           <p className="text-xs text-muted-foreground">
             {latestRun
-              ? `${statusLabel(latestRun.status)} by ${compactAgentName(latestRun, agentMap)}`
+              ? runSummary(latestRun, agentMap)
               : issueStatus === "in_progress"
                 ? "Waiting for the first run record."
                 : "No runs linked yet."}
@@ -297,10 +356,11 @@ export function IssueRunLedgerContent({
       ) : (
         <div className="divide-y divide-border rounded-md border border-border/70">
           {ledgerRuns.slice(0, 8).map((run) => {
-            const liveness = run.livenessState ? LIVENESS_COPY[run.livenessState] : null;
+            const liveness = livenessCopyForRun(run);
             const stopReason = stopReasonLabel(run);
             const duration = formatDuration(run.startedAt, run.finishedAt);
             const exhausted = hasExhaustedContinuation(run);
+            const continuation = continuationLabel(run);
             return (
               <article key={run.runId} className="space-y-2 px-3 py-3">
                 <div className="flex flex-wrap items-center gap-2">
@@ -319,31 +379,23 @@ export function IssueRunLedgerContent({
                       live
                     </span>
                   ) : null}
-                  {liveness ? (
-                    <span
-                      className={cn(
-                        "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
-                        liveness.tone,
-                      )}
-                      title={liveness.description}
-                    >
-                      {liveness.label}
-                    </span>
-                  ) : (
-                    <span className="rounded-md border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                      Liveness pending
-                    </span>
-                  )}
+                  <span
+                    className={cn(
+                      "rounded-md border px-1.5 py-0.5 text-[11px] font-medium",
+                      liveness.tone,
+                    )}
+                    title={liveness.description}
+                  >
+                    {liveness.label}
+                  </span>
                   {exhausted ? (
                     <span className="rounded-md border border-red-500/30 bg-red-500/10 px-1.5 py-0.5 text-[11px] font-medium text-red-700 dark:text-red-300">
                       Exhausted
                     </span>
                   ) : null}
-                  <span className="text-[11px] text-muted-foreground">
-                    {run.continuationAttempt && run.continuationAttempt > 0
-                      ? `continuation ${run.continuationAttempt}`
-                      : "initial attempt"}
-                  </span>
+                  {continuation ? (
+                    <span className="text-[11px] text-muted-foreground">{continuation}</span>
+                  ) : null}
                 </div>
 
                 <div className="grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
@@ -353,11 +405,11 @@ export function IssueRunLedgerContent({
                   </div>
                   <div className="min-w-0">
                     <span className="text-foreground">Last useful action</span>{" "}
-                    {run.lastUsefulActionAt ? relativeTime(run.lastUsefulActionAt) : "none recorded"}
+                    {lastUsefulActionLabel(run)}
                   </div>
                   <div className="min-w-0">
                     <span className="text-foreground">Stop</span>{" "}
-                    {stopReason ?? "not recorded"}
+                    {stopStatusLabel(run, stopReason)}
                   </div>
                 </div>
 
