@@ -3,12 +3,12 @@ import {
   asc,
   desc,
   eq,
+  gt,
   gte,
   inArray,
   isNull,
   lte,
   or,
-  sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { memoryExtractionJobs } from "@paperclipai/db";
@@ -335,7 +335,10 @@ export function memoryJobStore(db: Db) {
       conditions.push(lte(memoryExtractionJobs.leaseExpiresAt, now));
     } else if (query.effectiveState === "running") {
       conditions.push(eq(memoryExtractionJobs.status, "running"));
-      conditions.push(sql`(${memoryExtractionJobs.leaseExpiresAt} is null or ${memoryExtractionJobs.leaseExpiresAt} > ${now})`);
+      conditions.push(or(
+        isNull(memoryExtractionJobs.leaseExpiresAt),
+        gt(memoryExtractionJobs.leaseExpiresAt, now),
+      )!);
     } else if (query.effectiveState) {
       conditions.push(eq(memoryExtractionJobs.status, query.effectiveState));
     }
