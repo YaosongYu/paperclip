@@ -100,6 +100,26 @@ describe("issue graph liveness classifier", () => {
     expect(findings).toEqual([]);
   });
 
+  it("does not flag an unassigned blocker that already has an active execution path", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Unassigned but already running",
+          status: "todo",
+          assigneeAgentId: null,
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager],
+      activeRuns: [{ companyId, issueId: blockerId, agentId: coderId, status: "running" }],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
   it("detects cancelled blockers and uninvokable blocker assignees deterministically", () => {
     const cancelled = classifyIssueGraphLiveness({
       issues: [

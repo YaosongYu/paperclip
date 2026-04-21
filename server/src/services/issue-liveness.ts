@@ -250,6 +250,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
         }
 
         if (!blocker.assigneeAgentId && !blocker.assigneeUserId) {
+          if (hasActiveExecutionPath(issue.companyId, blocker.id, activeRuns, queuedWakeRequests)) continue;
           findings.push(finding({
             issue,
             state: "blocked_by_unassigned_issue",

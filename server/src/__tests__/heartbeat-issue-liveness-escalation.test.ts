@@ -212,4 +212,61 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(events.some((event) => event.action === "issue.harness_liveness_escalation_created")).toBe(true);
     expect(events.some((event) => event.action === "issue.blockers.updated")).toBe(true);
   });
+
+  it("creates a fresh escalation when the previous matching escalation is terminal", async () => {
+    const { companyId, managerId, blockedIssueId, blockerIssueId } = await seedBlockedChain();
+    const heartbeat = heartbeatService(db);
+    const incidentKey = [
+      "harness_liveness",
+      companyId,
+      blockedIssueId,
+      "blocked_by_unassigned_issue",
+      blockerIssueId,
+    ].join(":");
+    const closedEscalationId = randomUUID();
+
+    await db.insert(issues).values({
+      id: closedEscalationId,
+      companyId,
+      title: "Closed escalation",
+      status: "done",
+      priority: "high",
+      parentId: blockedIssueId,
+      assigneeAgentId: managerId,
+      issueNumber: 3,
+      identifier: "CLOSED-3",
+      originKind: "harness_liveness_escalation",
+      originId: incidentKey,
+    });
+
+    const result = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(result.escalationsCreated).toBe(1);
+    expect(result.existingEscalations).toBe(0);
+
+    const openEscalations = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "harness_liveness_escalation"),
+          eq(issues.originId, incidentKey),
+        ),
+      );
+    expect(openEscalations).toHaveLength(2);
+    const freshEscalation = openEscalations.find((issue) => issue.status !== "done");
+    expect(freshEscalation).toMatchObject({
+      parentId: blockedIssueId,
+      assigneeAgentId: managerId,
+      status: expect.stringMatching(/^(todo|in_progress|done)$/),
+    });
+
+    const blockers = await db
+      .select({ blockerIssueId: issueRelations.issueId })
+      .from(issueRelations)
+      .where(eq(issueRelations.relatedIssueId, blockedIssueId));
+    expect(blockers.some((row) => row.blockerIssueId === closedEscalationId)).toBe(false);
+    expect(blockers.some((row) => row.blockerIssueId === freshEscalation?.id)).toBe(true);
+  });
 });
