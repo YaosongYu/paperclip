@@ -104,7 +104,9 @@ CREATE INDEX IF NOT EXISTS "memory_extraction_jobs_company_operation_submitted_i
 CREATE INDEX IF NOT EXISTS "memory_extraction_jobs_company_issue_submitted_idx" ON "memory_extraction_jobs" USING btree ("company_id","source_issue_id","submitted_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "memory_extraction_jobs_company_run_submitted_idx" ON "memory_extraction_jobs" USING btree ("company_id","source_heartbeat_run_id","submitted_at");--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "memory_extraction_jobs_company_status_lease_expires_idx" ON "memory_extraction_jobs" USING btree ("company_id","status","lease_expires_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "memory_extraction_jobs_dispatcher_queued_idx" ON "memory_extraction_jobs" USING btree ("dispatcher_kind","submitted_at") WHERE "status" = 'queued';--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "memory_extraction_jobs_retry_of_job_idx" ON "memory_extraction_jobs" USING btree ("retry_of_job_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "memory_extraction_jobs_retry_attempt_uq" ON "memory_extraction_jobs" USING btree ("company_id","retry_of_job_id","attempt_number") WHERE "retry_of_job_id" is not null;--> statement-breakpoint
 CREATE INDEX IF NOT EXISTS "routine_runs_dispatch_fingerprint_idx" ON "routine_runs" USING btree ("routine_id","dispatch_fingerprint");--> statement-breakpoint
 CREATE UNIQUE INDEX IF NOT EXISTS "issues_open_routine_execution_uq" ON "issues" USING btree ("company_id","origin_kind","origin_id","origin_fingerprint") WHERE "issues"."origin_kind" = 'routine_execution'
           and "issues"."origin_id" is not null

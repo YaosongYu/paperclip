@@ -6,8 +6,10 @@ import {
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import type {
   MemoryExtractionJobAttributionMode,
   MemoryExtractionJobDispatcherKind,
@@ -95,6 +97,12 @@ export const memoryExtractionJobs = pgTable(
       table.status,
       table.leaseExpiresAt,
     ),
+    dispatcherQueuedIdx: index("memory_extraction_jobs_dispatcher_queued_idx")
+      .on(table.dispatcherKind, table.submittedAt)
+      .where(sql`${table.status} = 'queued'`),
     retryOfJobIdx: index("memory_extraction_jobs_retry_of_job_idx").on(table.retryOfJobId),
+    retryAttemptUq: uniqueIndex("memory_extraction_jobs_retry_attempt_uq")
+      .on(table.companyId, table.retryOfJobId, table.attemptNumber)
+      .where(sql`${table.retryOfJobId} is not null`),
   }),
 );

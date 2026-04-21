@@ -10677,6 +10677,28 @@
           "method": "btree",
           "with": {}
         },
+        "memory_extraction_jobs_dispatcher_queued_idx": {
+          "name": "memory_extraction_jobs_dispatcher_queued_idx",
+          "columns": [
+            {
+              "expression": "dispatcher_kind",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "submitted_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"memory_extraction_jobs\".\"status\" = 'queued'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
         "memory_extraction_jobs_retry_of_job_idx": {
           "name": "memory_extraction_jobs_retry_of_job_idx",
           "columns": [
@@ -10688,6 +10710,34 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "memory_extraction_jobs_retry_attempt_uq": {
+          "name": "memory_extraction_jobs_retry_attempt_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "retry_of_job_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "attempt_number",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"memory_extraction_jobs\".\"retry_of_job_id\" is not null",
           "concurrently": false,
           "method": "btree",
           "with": {}

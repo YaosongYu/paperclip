@@ -9,6 +9,7 @@ import {
   isNull,
   lte,
   or,
+  sql,
 } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { memoryExtractionJobs } from "@paperclipai/db";
@@ -681,64 +682,71 @@ export function memoryJobStore(db: Db) {
     jobId: string,
     opts: { now?: Date } = {},
   ): Promise<MemoryJobRecord> {
-    const sourceJob = await ensureMemoryJobExists(db, companyId, jobId);
+    return db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const sourceJob = await ensureMemoryJobExists(txDb, companyId, jobId);
 
-    if (!rerunEligibleForJob(sourceJob)) {
-      throw conflict(`Memory job ${sourceJob.id} cannot be rerun from status ${sourceJob.status}`);
-    }
+      if (!rerunEligibleForJob(sourceJob)) {
+        throw conflict(`Memory job ${sourceJob.id} cannot be rerun from status ${sourceJob.status}`);
+      }
 
-    const retryRootId = retryRootIdForJob(sourceJob);
-    const lineageRows = await db
-      .select({ attemptNumber: memoryExtractionJobs.attemptNumber })
-      .from(memoryExtractionJobs)
-      .where(
-        and(
-          eq(memoryExtractionJobs.companyId, companyId),
-          or(
-            eq(memoryExtractionJobs.id, retryRootId),
-            eq(memoryExtractionJobs.retryOfJobId, retryRootId),
-          ),
-        ),
+      const retryRootId = retryRootIdForJob(sourceJob);
+      await tx.execute(
+        sql`select id from ${memoryExtractionJobs} where ${memoryExtractionJobs.companyId} = ${companyId} and ${memoryExtractionJobs.id} = ${retryRootId} for update`,
       );
 
-    const nextAttemptNumber = lineageRows.reduce((maxAttempt, row) => {
-      return Math.max(maxAttempt, row.attemptNumber);
-    }, 0) + 1;
+      const lineageRows = await txDb
+        .select({ attemptNumber: memoryExtractionJobs.attemptNumber })
+        .from(memoryExtractionJobs)
+        .where(
+          and(
+            eq(memoryExtractionJobs.companyId, companyId),
+            or(
+              eq(memoryExtractionJobs.id, retryRootId),
+              eq(memoryExtractionJobs.retryOfJobId, retryRootId),
+            ),
+          ),
+        );
 
-    return db
-      .insert(memoryExtractionJobs)
-      .values({
-        companyId: sourceJob.companyId,
-        bindingId: sourceJob.bindingId,
-        bindingKey: sourceJob.bindingKey,
-        operationType: sourceJob.operationType,
-        status: "queued",
-        sourceAgentId: sourceJob.sourceAgentId,
-        sourceIssueId: sourceJob.sourceIssueId,
-        sourceProjectId: sourceJob.sourceProjectId,
-        sourceGoalId: sourceJob.sourceGoalId,
-        sourceHeartbeatRunId: sourceJob.sourceHeartbeatRunId,
-        hookKind: sourceJob.hookKind,
-        submittedAt: opts.now,
-        attributionMode: sourceJob.attributionMode,
-        costCents: 0,
-        resultSummary: null,
-        errorCode: null,
-        error: null,
-        sourceKind: sourceJob.sourceKind,
-        sourceRefJson: sourceJob.sourceRefJson,
-        retryOfJobId: retryRootId,
-        attemptNumber: nextAttemptNumber,
-        dispatcherKind: sourceJob.dispatcherKind,
-        leaseExpiresAt: null,
-        providerJobId: null,
-        usageJson: null,
-        resultJson: null,
-        startedAt: null,
-        finishedAt: null,
-      })
-      .returning()
-      .then((rows) => rows[0]);
+      const nextAttemptNumber = lineageRows.reduce((maxAttempt, row) => {
+        return Math.max(maxAttempt, row.attemptNumber);
+      }, 0) + 1;
+
+      return txDb
+        .insert(memoryExtractionJobs)
+        .values({
+          companyId: sourceJob.companyId,
+          bindingId: sourceJob.bindingId,
+          bindingKey: sourceJob.bindingKey,
+          operationType: sourceJob.operationType,
+          status: "queued",
+          sourceAgentId: sourceJob.sourceAgentId,
+          sourceIssueId: sourceJob.sourceIssueId,
+          sourceProjectId: sourceJob.sourceProjectId,
+          sourceGoalId: sourceJob.sourceGoalId,
+          sourceHeartbeatRunId: sourceJob.sourceHeartbeatRunId,
+          hookKind: sourceJob.hookKind,
+          submittedAt: opts.now,
+          attributionMode: sourceJob.attributionMode,
+          costCents: 0,
+          resultSummary: null,
+          errorCode: null,
+          error: null,
+          sourceKind: sourceJob.sourceKind,
+          sourceRefJson: sourceJob.sourceRefJson,
+          retryOfJobId: retryRootId,
+          attemptNumber: nextAttemptNumber,
+          dispatcherKind: sourceJob.dispatcherKind,
+          leaseExpiresAt: null,
+          providerJobId: null,
+          usageJson: null,
+          resultJson: null,
+          startedAt: null,
+          finishedAt: null,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+    });
   }
 
   return {

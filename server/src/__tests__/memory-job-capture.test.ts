@@ -224,7 +224,7 @@ describeEmbeddedPostgres("memory job capture", () => {
       costCents: 31,
     });
     expect(completed?.resultJson).toMatchObject({
-      captureState: "succeeded",
+      captureState: "recorded_pending_extraction",
       sourceRunId: runId,
       persistedUsageSummary: true,
     });

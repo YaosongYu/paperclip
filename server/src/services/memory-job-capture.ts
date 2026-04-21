@@ -317,11 +317,13 @@ export function createPostRunMemoryCaptureHandler(): MemoryJobHandler {
       };
     }
 
+    // The extraction engine is a follow-up layer; this handler only records the
+    // post-run context that a later extractor will consume.
     return {
       outcome: "succeeded",
       resultSummary: job.resultSummary ?? `Post-run capture recorded for run ${job.sourceHeartbeatRunId}`,
       resultJson: mergeCaptureResultJson(job.resultJson ?? null, {
-        captureState: "succeeded",
+        captureState: "recorded_pending_extraction",
         sourceRunId: job.sourceHeartbeatRunId,
         persistedUsageSummary: job.usageJson != null,
         persistedSourceIssueId: job.sourceIssueId,

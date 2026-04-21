@@ -508,7 +508,11 @@ export function MemoryJobs() {
 
           <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
             <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <Badge variant="outline">Showing latest {JOB_LIST_LIMIT}</Badge>
+              <Badge variant="outline">
+                {appliedFilters.state === "attention"
+                  ? `Showing latest ${JOB_LIST_LIMIT} per state`
+                  : `Showing latest ${JOB_LIST_LIMIT}`}
+              </Badge>
               <Badge variant="outline">{jobs.length} visible</Badge>
               {appliedFilters.issueLabel ? <Badge variant="outline">Issue {appliedFilters.issueLabel}</Badge> : null}
             </div>
