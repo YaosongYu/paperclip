@@ -14,6 +14,7 @@ import {
 } from "./IssueChatThread";
 import type {
   AskUserQuestionsInteraction,
+  RequestConfirmationInteraction,
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
 
@@ -211,6 +212,39 @@ function createQuestionInteraction(
       ],
     },
     result: null,
+    ...overrides,
+  };
+}
+
+function createExpiredRequestConfirmationInteraction(
+  overrides: Partial<RequestConfirmationInteraction> = {},
+): RequestConfirmationInteraction {
+  return {
+    id: "interaction-confirmation-expired",
+    companyId: "company-1",
+    issueId: "issue-1",
+    kind: "request_confirmation",
+    title: "Approve the plan",
+    status: "expired",
+    continuationPolicy: "wake_assignee_on_accept",
+    createdByAgentId: "agent-1",
+    createdByUserId: null,
+    resolvedByAgentId: null,
+    resolvedByUserId: "user-1",
+    createdAt: new Date("2026-04-06T12:04:00.000Z"),
+    updatedAt: new Date("2026-04-06T12:05:00.000Z"),
+    resolvedAt: new Date("2026-04-06T12:05:00.000Z"),
+    payload: {
+      version: 1,
+      prompt: "Approve the plan and let the assignee start implementation?",
+      acceptLabel: "Approve plan",
+      rejectLabel: "Request revisions",
+    },
+    result: {
+      version: 1,
+      outcome: "superseded_by_comment",
+      commentId: "comment-1",
+    },
     ...overrides,
   };
 }
@@ -529,6 +563,50 @@ describe("IssueChatThread", () => {
       }),
       [{ questionId: "scope", optionIds: ["phase-1"] }],
     );
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("folds expired request confirmations into an activity row by default", async () => {
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={[]}
+            interactions={[createExpiredRequestConfirmationInteraction()]}
+            linkedRuns={[]}
+            timelineEvents={[]}
+            liveRuns={[]}
+            onAdd={async () => {}}
+            currentUserId="user-1"
+            userLabelMap={new Map([["user-1", "Dotta"]])}
+            showComposer={false}
+            enableLiveTranscriptPolling={false}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Dotta");
+    expect(container.textContent).toContain("updated this task");
+    expect(container.textContent).toContain("Expired confirmation");
+    expect(container.textContent).not.toContain("Approve the plan");
+
+    const toggleButton = Array.from(container.querySelectorAll("button")).find((button) =>
+      button.textContent?.includes("Expired confirmation"),
+    );
+    expect(toggleButton).toBeTruthy();
+
+    await act(async () => {
+      toggleButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.textContent).toContain("Approve the plan");
+    expect(container.textContent).toContain("Confirmation expired after comment");
 
     act(() => {
       root.unmount();

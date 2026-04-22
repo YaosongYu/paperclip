@@ -53,7 +53,7 @@ import type {
   RequestConfirmationInteraction,
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
-import { isIssueThreadInteraction } from "../lib/issue-thread-interactions";
+import { buildIssueThreadInteractionSummary, isIssueThreadInteraction } from "../lib/issue-thread-interactions";
 import { resolveIssueChatTranscriptRuns } from "../lib/issueChatTranscriptRuns";
 import type { IssueTimelineAssignee, IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
@@ -614,6 +614,23 @@ function initialsForName(name: string) {
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   }
   return name.slice(0, 2).toUpperCase();
+}
+
+function formatInteractionActorLabel(args: {
+  agentId?: string | null;
+  userId?: string | null;
+  agentMap?: Map<string, Agent>;
+  currentUserId?: string | null;
+  userLabelMap?: ReadonlyMap<string, string> | null;
+}) {
+  const { agentId, userId, agentMap, currentUserId, userLabelMap } = args;
+  if (agentId) return agentMap?.get(agentId)?.name ?? agentId.slice(0, 8);
+  if (userId) {
+    return userLabelMap?.get(userId)
+      ?? formatAssigneeUserLabel(userId, currentUserId, userLabelMap)
+      ?? "Board";
+  }
+  return "System";
 }
 
 export function resolveIssueChatHumanAuthor(args: {
@@ -1741,6 +1758,106 @@ function IssueChatFeedbackButtons({
   );
 }
 
+function ExpiredRequestConfirmationActivity({
+  message,
+  anchorId,
+  interaction,
+}: {
+  message: ThreadMessage;
+  anchorId?: string;
+  interaction: RequestConfirmationInteraction;
+}) {
+  const {
+    agentMap,
+    currentUserId,
+    userLabelMap,
+    onAcceptInteraction,
+    onRejectInteraction,
+  } = useContext(IssueChatCtx);
+  const [expanded, setExpanded] = useState(false);
+  const hasResolvedActor = Boolean(interaction.resolvedByAgentId || interaction.resolvedByUserId);
+  const actorAgentId = hasResolvedActor
+    ? interaction.resolvedByAgentId ?? null
+    : interaction.createdByAgentId ?? null;
+  const actorUserId = hasResolvedActor
+    ? interaction.resolvedByUserId ?? null
+    : interaction.createdByUserId ?? null;
+  const actorName = formatInteractionActorLabel({
+    agentId: actorAgentId,
+    userId: actorUserId,
+    agentMap,
+    currentUserId,
+    userLabelMap,
+  });
+  const actorIcon = actorAgentId ? agentMap?.get(actorAgentId)?.icon : undefined;
+  const isCurrentUser = Boolean(actorUserId && currentUserId && actorUserId === currentUserId);
+  const detailsId = anchorId ? `${anchorId}-details` : `${interaction.id}-details`;
+  const summary = buildIssueThreadInteractionSummary(interaction);
+
+  const rowContent = (
+    <div className="min-w-0 flex-1">
+      <div className={cn("flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs", isCurrentUser && "justify-end")}>
+        <span className="font-medium text-foreground">{actorName}</span>
+        <span className="text-muted-foreground">updated this task</span>
+        <a
+          href={anchorId ? `#${anchorId}` : undefined}
+          className="text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+        >
+          {timeAgo(message.createdAt)}
+        </a>
+        <button
+          type="button"
+          className="inline-flex items-center gap-1 rounded-md border border-border/70 bg-background/70 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground transition-colors hover:border-border hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          aria-expanded={expanded}
+          aria-controls={detailsId}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          <ChevronDown className={cn("h-3 w-3 transition-transform", expanded && "rotate-180")} />
+          {expanded ? "Hide confirmation" : "Expired confirmation"}
+        </button>
+      </div>
+      {expanded ? (
+        <p className={cn("mt-1 text-xs text-muted-foreground", isCurrentUser && "text-right")}>
+          {summary}
+        </p>
+      ) : null}
+    </div>
+  );
+
+  return (
+    <div id={anchorId}>
+      {isCurrentUser ? (
+        <div className="flex items-start justify-end gap-2 py-1">
+          {rowContent}
+        </div>
+      ) : (
+        <div className="flex items-start gap-2.5 py-1">
+          <Avatar size="sm" className="mt-0.5">
+            {actorIcon ? (
+              <AvatarFallback><AgentIcon icon={actorIcon} className="h-3.5 w-3.5" /></AvatarFallback>
+            ) : (
+              <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
+            )}
+          </Avatar>
+          {rowContent}
+        </div>
+      )}
+      {expanded ? (
+        <div id={detailsId} className="mt-2">
+          <IssueThreadInteractionCard
+            interaction={interaction}
+            agentMap={agentMap}
+            currentUserId={currentUserId}
+            userLabelMap={userLabelMap}
+            onAcceptInteraction={onAcceptInteraction}
+            onRejectInteraction={onRejectInteraction}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
   const {
     agentMap,
@@ -1773,6 +1890,16 @@ function IssueChatSystemMessage({ message }: { message: ThreadMessage }) {
     : null;
 
   if (custom.kind === "interaction" && interaction) {
+    if (interaction.kind === "request_confirmation" && interaction.status === "expired") {
+      return (
+        <ExpiredRequestConfirmationActivity
+          message={message}
+          anchorId={anchorId}
+          interaction={interaction}
+        />
+      );
+    }
+
     return (
       <div id={anchorId}>
         <div className="py-1.5">
