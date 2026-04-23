@@ -28,6 +28,9 @@ export type {
   IssueLivenessState,
 } from "./issue-graph-liveness.js";
 export {
+  recoveryService,
+} from "./service.js";
+export {
   DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
   RUN_LIVENESS_CONTINUATION_REASON,
   buildRunLivenessContinuationIdempotencyKey,
