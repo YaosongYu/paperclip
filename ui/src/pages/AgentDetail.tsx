@@ -1523,11 +1523,8 @@ function AgentOverview({
         )}
       </div>
 
-      {/* Costs */}
-      <div className="space-y-3">
-        <h3 className="text-sm font-medium">Costs</h3>
-        <CostsSection runtimeState={runtimeState} runs={runs} />
-      </div>
+      {/* Costs — unified summary + per-run detail */}
+      <CostsSection runtimeState={runtimeState} runs={runs} />
     </div>
   );
 }
@@ -1541,70 +1538,73 @@ function CostsSection({
   runtimeState?: AgentRuntimeState;
   runs: HeartbeatRun[];
 }) {
-  const runsWithCost = runs
-    .filter((r) => {
-      const metrics = runMetrics(r);
-      return metrics.cost > 0 || metrics.input > 0 || metrics.output > 0 || metrics.cached > 0;
-    })
-    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  const runsWithCost = useMemo(
+    () =>
+      runs
+        .filter((r) => {
+          const metrics = runMetrics(r);
+          return metrics.cost > 0 || metrics.input > 0 || metrics.output > 0 || metrics.cached > 0;
+        })
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
+    [runs],
+  );
+
+  const hasSummary = Boolean(runtimeState);
+  const hasTable = runsWithCost.length > 0;
+
+  if (!hasSummary && !hasTable) {
+    return (
+      <div className="border border-border rounded-none p-4 space-y-1">
+        <div className="text-xs text-muted-foreground">Costs — session</div>
+        <p className="text-sm text-muted-foreground">No cost data yet.</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="space-y-4">
-      {runtimeState && (
-        <div className="border border-border rounded-none p-4">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 tabular-nums">
-            <div>
-              <span className="text-xs text-muted-foreground block">Input tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalInputTokens)}</span>
-            </div>
-            <div>
-              <span className="text-xs text-muted-foreground block">Output tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalOutputTokens)}</span>
-            </div>
-            <div>
-              <span className="text-xs text-muted-foreground block">Cached tokens</span>
-              <span className="text-lg font-semibold">{formatTokens(runtimeState.totalCachedInputTokens)}</span>
-            </div>
-            <div>
-              <span className="text-xs text-muted-foreground block">Total cost</span>
-              <span className="text-lg font-semibold">{formatCents(runtimeState.totalCostCents)}</span>
-            </div>
+    <div className="border border-border rounded-none">
+      {hasSummary && runtimeState && (
+        <div className="p-4 space-y-1">
+          <div className="text-xs text-muted-foreground">Costs — session</div>
+          <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5 tabular-nums">
+            <span className="text-sm font-semibold">{formatCents(runtimeState.totalCostCents)} cumulative</span>
+            <span className="text-xs text-muted-foreground">·</span>
+            <span className="text-xs text-muted-foreground">{formatTokens(runtimeState.totalInputTokens)} in</span>
+            <span className="text-xs text-muted-foreground">·</span>
+            <span className="text-xs text-muted-foreground">{formatTokens(runtimeState.totalOutputTokens)} out</span>
+            <span className="text-xs text-muted-foreground">·</span>
+            <span className="text-xs text-muted-foreground">{formatTokens(runtimeState.totalCachedInputTokens)} cached</span>
           </div>
         </div>
       )}
-      {runsWithCost.length > 0 && (
-        <div className="border border-border rounded-none overflow-hidden">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-border bg-accent/20">
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
-                <th className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
-                <th className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
-              </tr>
-            </thead>
-            <tbody>
-              {runsWithCost.slice(0, 10).map((run) => {
-                const metrics = runMetrics(run);
-                return (
-                  <tr key={run.id} className="border-b border-border last:border-b-0">
-                    <td className="px-3 py-2">{formatDate(run.createdAt)}</td>
-                    <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      {metrics.cost > 0
-                        ? `$${metrics.cost.toFixed(4)}`
-                        : "-"
-                      }
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+      {hasTable && (
+        <table className="w-full text-xs">
+          <thead>
+            <tr className={cn("bg-accent/20", hasSummary && "border-t border-border")}>
+              <th className="text-left px-3 py-2 font-medium text-muted-foreground">Date</th>
+              <th className="text-left px-3 py-2 font-medium text-muted-foreground">Run</th>
+              <th className="text-right px-3 py-2 font-medium text-muted-foreground">Input</th>
+              <th className="text-right px-3 py-2 font-medium text-muted-foreground">Output</th>
+              <th className="text-right px-3 py-2 font-medium text-muted-foreground">Cost</th>
+            </tr>
+          </thead>
+          <tbody>
+            {runsWithCost.slice(0, 10).map((run) => {
+              const metrics = runMetrics(run);
+              return (
+                <tr key={run.id} className="border-t border-border">
+                  <td className="px-3 py-2">{formatDate(run.createdAt)}</td>
+                  <td className="px-3 py-2 font-mono">{run.id.slice(0, 8)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.input)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">{formatTokens(metrics.output)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {metrics.cost > 0 ? `$${metrics.cost.toFixed(4)}` : "-"}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       )}
     </div>
   );
