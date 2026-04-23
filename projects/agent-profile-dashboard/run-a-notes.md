@@ -234,3 +234,54 @@ Hero unchanged from Phase 3a polish round 3 — still passes. Chart band below t
 
 - **Carried forward:** the right edge of the Latest Run card doesn't currently align with the right edge of the content grid. Filed as a Phase 4 polish candidate; not addressed in 3b.
 - **Possible follow-up for 3d (Costs):** with the chart band now small, the Costs module below the in-flight tasks has more room. May influence Phase 3d layout decisions.
+
+---
+
+## Phase 3b polish — chart legend and rich tooltips
+
+Smoke-test surfaced a pre-existing gap: `RunActivityChart` had no legend and only a native-`title` tooltip showing daily total (no breakdown). Consolidation raised the chart's prominence, so the gap demanded a fix.
+
+### Investigation
+
+- **Legend:** `ChartLegend` helper existed in `ActivityCharts.tsx` and was used by `PriorityChart` + `IssueStatusChart`, but never by `RunActivityChart`. Pre-existing omission, not something the consolidation introduced.
+- **Tooltips:** `RunActivityChart` used a native HTML `title` attribute on each day column (`${day}: ${total} runs`) — same unreliable mechanism we replaced in Phase 3a, and it only showed total (not the succeeded/failed/other breakdown that matches the stacked bars).
+- **Other consumer:** `pages/Dashboard.tsx` also renders `RunActivityChart` (for the company-level dashboard). Any change to the shared component affects both surfaces.
+
+### Scope-preserving implementation
+
+- **Legend:** exported the existing `ChartLegend` helper (was file-private). Rendered inline in `AgentOverview` as a sibling of `RunActivityChart` inside `ChartCard`. Zero-touch to `RunActivityChart`. `Dashboard.tsx` unaffected — doesn't render the legend, doesn't import `ChartLegend`.
+- **Tooltips:** added an opt-in `richTooltips?: boolean` prop to `RunActivityChart`. When `true`, each day column is wrapped in a shadcn `<Tooltip>` (already-established project pattern from Phase 3a polish) with content `{day; "Succeeded: N · Failed: N · Other: N"}`. When `false` (default), the existing native-`title` behavior is preserved. `Dashboard.tsx` doesn't pass the prop — unchanged behavior there.
+- Bar markup was extracted into a local `bar` const so both branches (richTooltips on/off) share the identical rendering. No duplication.
+- The rich-tooltip branch uses a `<button>` element as `TooltipTrigger asChild`'s child (not a `<div>`) for keyboard focusability — `Tooltip` from Radix expects a focusable trigger for the keyboard path. `cursor-default` preserves the visual mouse affordance (it's a trigger, not an action).
+
+### Operating principles cited
+
+- *Recognition over Recall:* legend makes each bar color's meaning recognizable without requiring the user to remember the convention. Without a legend, a user seeing red-and-gray bars has to infer red=failed and gray=other from context.
+- *Information Scent:* hover tooltips give users the precise "what does this bar mean" detail they'll reach for. Breakdown-per-day is the actionable data for debug-mode users (identify which days had failures), not total count.
+- *Doherty Threshold:* shadcn Tooltip with `delayDuration={0}` (provider default, set in `main.tsx`) opens near-instantly. Native `title` takes ~500ms.
+- *Jakob's Law:* shadcn Tooltip is the project-standard hover-help vocabulary already used elsewhere (Phase 3a polish for recent-runs was the prior precedent — no longer in use, but the pattern is established).
+
+### DS deviations
+
+- **`bg-emerald-500`, `bg-red-500`, `bg-neutral-500` in the bars** — already present in the shared `RunActivityChart`; no drift introduced by this change.
+- **Legend color literals** (`#10b981`, `#ef4444`, `#737373`) match the Tailwind hex values of those bar classes, mirroring the pattern already used by `PriorityChart` and `IssueStatusChart` when they call `ChartLegend`. No new hex introduced.
+- **Legend renders all three categories unconditionally**, even if one has zero bars in the current window. Keeps the vocabulary stable across states — users always see what's possible.
+
+### Cross-consumer surface check
+
+`ActivityCharts.tsx` changes were:
+1. Export `ChartLegend` (additive).
+2. Import `Tooltip` primitives from `@/components/ui/tooltip` at the top of the file.
+3. Add opt-in `richTooltips` prop to `RunActivityChart` (default off).
+
+All three are backward-compatible. `Dashboard.tsx` (the other consumer) was not modified and continues to render `RunActivityChart` with its original native-`title` behavior.
+
+Existing `ActivityCharts.test.tsx` passes unchanged (2 tests green).
+
+### Deferred to Phase 4 — chart sparseness
+
+The single wide chart at full content width feels thin with surrounding whitespace. **Not addressed now.** Premature to judge chart visual weight in isolation before Phase 3c (priority affordance) and Phase 3d (costs) land below. Candidate resolutions if the issue persists after 3d:
+- Densify the chart (taller bars, integrate summary stats alongside).
+- Narrow the chart to ~65% width with another meaningful module alongside (e.g., a summary-metrics card or small KPI strip).
+
+Filed here so Phase 4 doesn't forget the observation.

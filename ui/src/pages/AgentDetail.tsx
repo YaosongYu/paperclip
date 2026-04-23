@@ -12,7 +12,7 @@ import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
-import { ChartCard, RunActivityChart } from "../components/ActivityCharts";
+import { ChartCard, ChartLegend, RunActivityChart } from "../components/ActivityCharts";
 import { activityApi } from "../api/activity";
 import { issuesApi } from "../api/issues";
 import { usePanel } from "../context/PanelContext";
@@ -1421,7 +1421,14 @@ function AgentOverview({
 
       {/* Run activity — single merged chart. Issues-by-Priority and Issues-by-Status are reachable via the /issues filter views. */}
       <ChartCard title="Run Activity" subtitle={runActivitySubtitle}>
-        <RunActivityChart runs={runs} />
+        <RunActivityChart runs={runs} richTooltips />
+        <ChartLegend
+          items={[
+            { color: "#10b981", label: "Succeeded" },
+            { color: "#ef4444", label: "Failed" },
+            { color: "#737373", label: "Other" },
+          ]}
+        />
       </ChartCard>
 
       {/* In-flight tasks — filter: status ∈ {todo, in_progress, blocked}; sort: priority DESC, updatedAt DESC; limit 7 */}

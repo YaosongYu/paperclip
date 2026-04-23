@@ -1,4 +1,5 @@
 import type { DashboardRunActivityDay, HeartbeatRun } from "@paperclipai/shared";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 /* ---- Utilities ---- */
 
@@ -31,7 +32,7 @@ function DateLabels({ days }: { days: string[] }) {
   );
 }
 
-function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
+export function ChartLegend({ items }: { items: { color: string; label: string }[] }) {
   return (
     <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-2">
       {items.map(item => (
@@ -84,7 +85,7 @@ function resolveRunActivity(props: RunChartProps): DashboardRunActivityDay[] {
   return [];
 }
 
-export function RunActivityChart(props: RunChartProps) {
+export function RunActivityChart(props: RunChartProps & { richTooltips?: boolean }) {
   const activity = resolveRunActivity(props);
   const days = activity.length > 0 ? activity.map((day) => day.date) : getLast14Days();
   const grouped = new Map(activity.map((day) => [day.date, day]));
@@ -101,17 +102,51 @@ export function RunActivityChart(props: RunChartProps) {
           const entry = grouped.get(day) ?? { date: day, succeeded: 0, failed: 0, other: 0, total: 0 };
           const total = entry.total;
           const heightPct = (total / maxValue) * 100;
+          const bar = total > 0 ? (
+            <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
+              {entry.succeeded > 0 && <div className="bg-emerald-500" style={{ flex: entry.succeeded }} />}
+              {entry.failed > 0 && <div className="bg-red-500" style={{ flex: entry.failed }} />}
+              {entry.other > 0 && <div className="bg-neutral-500" style={{ flex: entry.other }} />}
+            </div>
+          ) : (
+            <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
+          );
+
+          if (props.richTooltips) {
+            return (
+              <Tooltip key={day}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    className="flex-1 h-full flex flex-col justify-end bg-transparent border-0 p-0 cursor-default"
+                    aria-label={`${day}: ${total} run${total === 1 ? "" : "s"}`}
+                  >
+                    {bar}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="text-xs">
+                  <div className="font-medium tabular-nums">{day}</div>
+                  <div className="text-muted-foreground tabular-nums">
+                    {total === 0 ? (
+                      "No runs"
+                    ) : (
+                      <>
+                        <span>Succeeded: {entry.succeeded}</span>
+                        {" · "}
+                        <span>Failed: {entry.failed}</span>
+                        {" · "}
+                        <span>Other: {entry.other}</span>
+                      </>
+                    )}
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            );
+          }
+
           return (
             <div key={day} className="flex-1 h-full flex flex-col justify-end" title={`${day}: ${total} runs`}>
-              {total > 0 ? (
-                <div className="flex flex-col-reverse gap-px overflow-hidden" style={{ height: `${heightPct}%`, minHeight: 2 }}>
-                  {entry.succeeded > 0 && <div className="bg-emerald-500" style={{ flex: entry.succeeded }} />}
-                  {entry.failed > 0 && <div className="bg-red-500" style={{ flex: entry.failed }} />}
-                  {entry.other > 0 && <div className="bg-neutral-500" style={{ flex: entry.other }} />}
-                </div>
-              ) : (
-                <div className="bg-muted/30 rounded-sm" style={{ height: 2 }} />
-              )}
+              {bar}
             </div>
           );
         })}
