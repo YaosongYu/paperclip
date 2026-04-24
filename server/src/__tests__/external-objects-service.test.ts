@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   companies,
   createDb,
@@ -7,6 +8,7 @@ import {
   externalObjects,
   issueComments,
   issues,
+  plugins,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -19,6 +21,8 @@ import {
   type ExternalObjectResolver,
 } from "../services/external-objects.js";
 import { canonicalizeExternalObjectUrl } from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
+import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -133,6 +137,7 @@ describeEmbeddedPostgres("externalObjectService", () => {
     await db.delete(externalObjects);
     await db.delete(issueComments);
     await db.delete(issues);
+    await db.delete(plugins);
     await db.delete(companies);
     vi.restoreAllMocks();
   });
@@ -251,5 +256,98 @@ describeEmbeddedPostgres("externalObjectService", () => {
     expect(objectRows).toHaveLength(2);
     expect(new Set(objectRows.map((row) => row.companyId))).toEqual(new Set([first.companyId, second.companyId]));
     expect(new Set(objectRows.map((row) => row.canonicalIdentityHash))).toHaveSize(1);
+  });
+
+  it("uses a mock plugin provider to detect and resolve non-GitHub objects", async () => {
+    const { companyId, issueId } = await createIssue();
+    await db
+      .update(issues)
+      .set({
+        description: "Track https://mock.example/tickets/123?secret=drop",
+      })
+      .where(eq(issues.id, issueId));
+
+    const manifest: PaperclipPluginManifestV1 = {
+      id: "paperclip.mock-object-provider",
+      apiVersion: 1,
+      version: "1.0.0",
+      displayName: "Mock Object Provider",
+      description: "Detects mock tracker tickets",
+      author: "Paperclip",
+      categories: ["connector"],
+      capabilities: ["external.objects.detect", "external.objects.read"],
+      entrypoints: { worker: "dist/worker.js" },
+      objectReferences: [
+        {
+          providerKey: "mocktracker",
+          displayName: "Mock Tracker",
+          objectTypes: ["ticket"],
+          urlPatterns: ["https://mock.example/tickets/:id"],
+        },
+      ],
+    };
+    const [plugin] = await db.insert(plugins).values({
+      pluginKey: manifest.id,
+      packageName: "@paperclip/mock-object-provider",
+      version: manifest.version,
+      apiVersion: 1,
+      categories: manifest.categories,
+      manifestJson: manifest,
+      status: "ready",
+      installOrder: 1,
+    }).returning();
+
+    const workerManager = {
+      call: vi.fn(async (pluginId: string, method: string, params: any) => {
+        expect(pluginId).toBe(plugin!.id);
+        if (method === "detectExternalObjects") {
+          return {
+            detections: params.urls.map((url: any) => ({
+              urlIdentityHash: url.canonicalIdentityHash,
+              providerKey: "mocktracker",
+              objectType: "ticket",
+              externalId: "MOCK-123",
+              displayTitle: "Mock ticket 123",
+              confidence: "exact",
+            })),
+          };
+        }
+        if (method === "resolveExternalObject") {
+          return {
+            ok: true,
+            snapshot: {
+              displayTitle: `Resolved ${params.externalId}`,
+              statusKey: "ready",
+              statusLabel: "Ready",
+              statusCategory: "succeeded",
+              statusTone: "success",
+              ttlSeconds: 300,
+            },
+          };
+        }
+        throw new Error(`unexpected method ${method}`);
+      }),
+    } as unknown as PluginWorkerManager;
+
+    const svc = externalObjectService(db, { pluginWorkerManager: workerManager });
+    await svc.syncIssue(issueId);
+
+    const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
+    expect(object).toMatchObject({
+      companyId,
+      providerKey: "mocktracker",
+      objectType: "ticket",
+      externalId: "MOCK-123",
+      pluginId: plugin!.id,
+      sanitizedCanonicalUrl: "https://mock.example/tickets/123",
+    });
+    expect(JSON.stringify(object)).not.toContain("secret");
+
+    const refreshed = await svc.refreshObject(object.id, { companyId, force: true });
+    expect(refreshed.object).toMatchObject({
+      statusCategory: "succeeded",
+      statusTone: "success",
+      liveness: "fresh",
+    });
   });
 });

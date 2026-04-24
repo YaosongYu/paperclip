@@ -51,6 +51,8 @@ export type {
   PluginDatabaseDeclaration,
   PluginApiRouteDeclaration,
   PluginApiRouteCompanyResolution,
+  PluginObjectReferenceRefreshPolicy,
+  PluginObjectReferenceProviderDeclaration,
   PluginRecord,
   PluginDatabaseNamespaceRecord,
   PluginMigrationRecord,

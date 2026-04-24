@@ -83,6 +83,10 @@ const OPERATION_CAPABILITIES: Record<string, readonly PluginCapability[]> = {
   "telemetry.track": ["telemetry.track"],
   "db.migrate": ["database.namespace.migrate"],
   "db.execute": ["database.namespace.write"],
+  "external.objects.detect": ["external.objects.detect"],
+  "external.objects.read": ["external.objects.read"],
+  "external.objects.write": ["external.objects.write"],
+  "external.objects.refresh": ["external.objects.refresh"],
 
   // Plugin state operations
   "plugin.state.get": ["plugin.state.read"],
@@ -167,6 +171,7 @@ const FEATURE_CAPABILITIES: Record<string, PluginCapability> = {
   webhooks: "webhooks.receive",
   database: "database.namespace.migrate",
   environmentDrivers: "environment.drivers.register",
+  objectReferences: "external.objects.detect",
 };
 
 // ---------------------------------------------------------------------------
@@ -426,6 +431,14 @@ export function pluginCapabilityValidator(): PluginCapabilityValidator {
         const featureValue = manifest[feature as keyof PaperclipPluginManifestV1];
         if (Array.isArray(featureValue) && featureValue.length > 0) {
           if (!declared.has(requiredCap)) {
+            allMissing.push(requiredCap);
+          }
+        }
+      }
+
+      if ((manifest.objectReferences?.length ?? 0) > 0) {
+        for (const requiredCap of ["external.objects.detect", "external.objects.read"] as const) {
+          if (!declared.has(requiredCap) && !allMissing.includes(requiredCap)) {
             allMissing.push(requiredCap);
           }
         }

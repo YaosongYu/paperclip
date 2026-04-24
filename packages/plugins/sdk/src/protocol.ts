@@ -31,6 +31,11 @@ import type {
   CreateIssueThreadInteraction,
   Agent,
   Goal,
+  ExternalObjectStatusCategory,
+  ExternalObjectStatusTone,
+  ExternalObjectLivenessState,
+  ExternalObjectMentionConfidence,
+  ExternalObjectMentionSourceKind,
 } from "@paperclipai/shared";
 export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 
@@ -325,6 +330,105 @@ export interface ExecuteToolParams {
   runContext: ToolRunContext;
 }
 
+export interface PluginExternalObjectUrlCandidate {
+  sanitizedCanonicalUrl: string;
+  sanitizedDisplayUrl: string;
+  canonicalIdentityHash: string;
+  canonicalIdentity: Record<string, unknown>;
+  redactedMatchedText: string;
+}
+
+export interface PluginExternalObjectSourceContext {
+  companyId: string;
+  sourceIssueId: string;
+  sourceKind: ExternalObjectMentionSourceKind;
+  sourceRecordId: string | null;
+  documentKey: string | null;
+  propertyKey: string | null;
+}
+
+export interface DetectExternalObjectsParams {
+  companyId: string;
+  urls: PluginExternalObjectUrlCandidate[];
+  sourceContext: PluginExternalObjectSourceContext;
+}
+
+export interface PluginExternalObjectDetection {
+  urlIdentityHash: string;
+  providerKey: string;
+  objectType: string;
+  externalId: string;
+  displayTitle?: string | null;
+  confidence?: ExternalObjectMentionConfidence;
+}
+
+export interface DetectExternalObjectsResult {
+  detections: PluginExternalObjectDetection[];
+}
+
+export interface PluginExternalObjectRecordSnapshot {
+  id: string;
+  companyId: string;
+  providerKey: string;
+  objectType: string;
+  externalId: string;
+  sanitizedCanonicalUrl: string | null;
+  canonicalIdentityHash: string | null;
+  displayTitle: string | null;
+  statusKey: string | null;
+  statusLabel: string | null;
+  statusCategory: ExternalObjectStatusCategory;
+  statusTone: ExternalObjectStatusTone;
+  liveness: ExternalObjectLivenessState;
+  isTerminal: boolean;
+  data: Record<string, unknown>;
+  remoteVersion: string | null;
+  etag: string | null;
+}
+
+export interface ResolveExternalObjectParams {
+  companyId: string;
+  providerKey: string;
+  objectType: string;
+  externalId: string;
+  object: PluginExternalObjectRecordSnapshot;
+}
+
+export interface PluginExternalObjectResolvedSnapshot {
+  displayTitle?: string | null;
+  statusKey?: string | null;
+  statusLabel?: string | null;
+  statusCategory: ExternalObjectStatusCategory;
+  statusTone: ExternalObjectStatusTone;
+  isTerminal?: boolean;
+  data?: Record<string, unknown>;
+  remoteVersion?: string | null;
+  etag?: string | null;
+  ttlSeconds?: number;
+}
+
+export type PluginExternalObjectResolveResult =
+  | { ok: true; snapshot: PluginExternalObjectResolvedSnapshot }
+  | {
+      ok: false;
+      liveness: Extract<ExternalObjectLivenessState, "auth_required" | "unreachable">;
+      errorCode: string;
+      errorMessage?: string | null;
+      retryAfterSeconds?: number;
+    };
+
+export interface RefreshExternalObjectsParams {
+  companyId: string;
+  objects: PluginExternalObjectRecordSnapshot[];
+}
+
+export interface RefreshExternalObjectsResult {
+  results: Array<{
+    objectId: string;
+    result: PluginExternalObjectResolveResult;
+  }>;
+}
+
 export interface PluginEnvironmentDiagnostic {
   severity: "info" | "warning" | "error";
   message: string;
@@ -487,6 +591,18 @@ export interface HostToWorkerMethods {
   performAction: [params: PerformActionParams, result: unknown];
   /** @see PLUGIN_SPEC.md §13.10 */
   executeTool: [params: ExecuteToolParams, result: ToolResult];
+  detectExternalObjects: [
+    params: DetectExternalObjectsParams,
+    result: DetectExternalObjectsResult,
+  ];
+  resolveExternalObject: [
+    params: ResolveExternalObjectParams,
+    result: PluginExternalObjectResolveResult,
+  ];
+  refreshExternalObjects: [
+    params: RefreshExternalObjectsParams,
+    result: RefreshExternalObjectsResult,
+  ];
   environmentValidateConfig: [
     params: PluginEnvironmentValidateConfigParams,
     result: PluginEnvironmentValidationResult,
@@ -542,6 +658,9 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "getData",
   "performAction",
   "executeTool",
+  "detectExternalObjects",
+  "resolveExternalObject",
+  "refreshExternalObjects",
   "environmentValidateConfig",
   "environmentProbe",
   "environmentAcquireLease",

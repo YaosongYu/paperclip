@@ -642,6 +642,10 @@ export const PLUGIN_CAPABILITIES = [
   "telemetry.track",
   "database.namespace.migrate",
   "database.namespace.write",
+  "external.objects.detect",
+  "external.objects.read",
+  "external.objects.write",
+  "external.objects.refresh",
   // Plugin State
   "plugin.state.read",
   "plugin.state.write",

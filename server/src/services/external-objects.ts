@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNull, lte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { documents, externalObjectMentions, externalObjects, issueComments, issueDocuments, issues } from "@paperclipai/db";
+import { documents, externalObjectMentions, externalObjects, issueComments, issueDocuments, issues, plugins } from "@paperclipai/db";
 import {
   extractExternalObjectCanonicalUrls,
   formatExternalObjectMentionSourceLabel,
@@ -10,11 +10,14 @@ import {
   type ExternalObjectMentionSourceKind,
   type ExternalObjectStatusCategory,
   type ExternalObjectStatusTone,
+  type PaperclipPluginManifestV1,
 } from "@paperclipai/shared";
+import type { PluginExternalObjectRecordSnapshot, PluginExternalObjectResolveResult } from "@paperclipai/plugin-sdk";
 import { notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { logActivity, type LogActivityInput } from "./activity-log.js";
 import { publishLiveEvent } from "./live-events.js";
+import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 export interface ExternalObjectSourceContext {
   companyId: string;
@@ -193,14 +196,162 @@ export function createExternalObjectResolverRegistry(resolvers: ExternalObjectRe
   return { find };
 }
 
+function manifestProvidesObject(
+  manifest: PaperclipPluginManifestV1,
+  object: Pick<ExternalObjectRecord, "providerKey" | "objectType">,
+) {
+  return (manifest.objectReferences ?? []).some(
+    (provider) =>
+      provider.providerKey === object.providerKey &&
+      provider.objectTypes.includes(object.objectType),
+  );
+}
+
+function objectSnapshot(object: ExternalObjectRecord): PluginExternalObjectRecordSnapshot {
+  return {
+    id: object.id,
+    companyId: object.companyId,
+    providerKey: object.providerKey,
+    objectType: object.objectType,
+    externalId: object.externalId,
+    sanitizedCanonicalUrl: object.sanitizedCanonicalUrl,
+    canonicalIdentityHash: object.canonicalIdentityHash,
+    displayTitle: object.displayTitle,
+    statusKey: object.statusKey,
+    statusLabel: object.statusLabel,
+    statusCategory: object.statusCategory,
+    statusTone: object.statusTone,
+    liveness: object.liveness,
+    isTerminal: object.isTerminal,
+    data: object.data as Record<string, unknown>,
+    remoteVersion: object.remoteVersion,
+    etag: object.etag,
+  };
+}
+
+async function readyObjectReferencePlugins(db: Db) {
+  return db
+    .select({
+      id: plugins.id,
+      pluginKey: plugins.pluginKey,
+      manifestJson: plugins.manifestJson,
+    })
+    .from(plugins)
+    .where(eq(plugins.status, "ready"))
+    .orderBy(asc(plugins.installOrder))
+    .then((rows) =>
+      rows.filter((row) => (row.manifestJson.objectReferences?.length ?? 0) > 0),
+    );
+}
+
+function createPluginProviderDetector(
+  db: Db,
+  pluginWorkerManager: PluginWorkerManager,
+): ExternalObjectDetector {
+  return {
+    key: "plugin-object-reference-providers",
+    async detect(input) {
+      const providers = await readyObjectReferencePlugins(db);
+      const detections: ExternalObjectDetection[] = [];
+
+      for (const provider of providers) {
+        const manifest = provider.manifestJson;
+        if (!manifest.capabilities.includes("external.objects.detect")) continue;
+        try {
+          const result = await pluginWorkerManager.call(provider.id, "detectExternalObjects", {
+            companyId: input.companyId,
+            urls: input.urls.map((url) => ({
+              sanitizedCanonicalUrl: url.sanitizedCanonicalUrl,
+              sanitizedDisplayUrl: url.sanitizedDisplayUrl,
+              canonicalIdentityHash: url.canonicalIdentityHash,
+              canonicalIdentity: url.canonicalIdentity as unknown as Record<string, unknown>,
+              redactedMatchedText: url.redactedMatchedText,
+            })),
+            sourceContext: input.sourceContext,
+          });
+          const urlsByHash = new Map(input.urls.map((url) => [url.canonicalIdentityHash, url]));
+          const declaredProviderKeys = new Set((manifest.objectReferences ?? []).map((entry) => entry.providerKey));
+
+          for (const detection of result.detections ?? []) {
+            const canonical = urlsByHash.get(detection.urlIdentityHash);
+            if (!canonical) continue;
+            if (!declaredProviderKeys.has(detection.providerKey)) continue;
+            const declaration = (manifest.objectReferences ?? []).find((entry) => entry.providerKey === detection.providerKey);
+            if (!declaration?.objectTypes.includes(detection.objectType)) continue;
+            detections.push({
+              canonical,
+              detectorKey: `${provider.pluginKey}:${detection.providerKey}`,
+              providerKey: detection.providerKey,
+              objectType: detection.objectType,
+              externalId: detection.externalId,
+              displayTitle: detection.displayTitle,
+              confidence: detection.confidence ?? "exact",
+              pluginId: provider.id,
+            });
+          }
+        } catch (err) {
+          logger.warn(
+            { err, pluginId: provider.id, pluginKey: provider.pluginKey },
+            "plugin external object detector failed",
+          );
+        }
+      }
+
+      return detections;
+    },
+  };
+}
+
+async function resolveViaPluginProvider(
+  db: Db,
+  pluginWorkerManager: PluginWorkerManager | undefined,
+  object: ExternalObjectRecord,
+): Promise<PluginExternalObjectResolveResult | null> {
+  if (!pluginWorkerManager) return null;
+  const providers = await readyObjectReferencePlugins(db);
+  for (const provider of providers) {
+    const manifest = provider.manifestJson;
+    if (!manifest.capabilities.includes("external.objects.read")) continue;
+    if (!manifestProvidesObject(manifest, object)) continue;
+    try {
+      return await pluginWorkerManager.call(provider.id, "resolveExternalObject", {
+        companyId: object.companyId,
+        providerKey: object.providerKey,
+        objectType: object.objectType,
+        externalId: object.externalId,
+        object: objectSnapshot(object),
+      });
+    } catch (err) {
+      logger.warn(
+        { err, pluginId: provider.id, pluginKey: provider.pluginKey, objectId: object.id },
+        "plugin external object resolver failed",
+      );
+      return {
+        ok: false,
+        liveness: "unreachable",
+        errorCode: "plugin_resolver_failed",
+        errorMessage: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }
+  return null;
+}
+
 export function externalObjectService(
   db: Db,
   opts: {
     detectors?: ExternalObjectDetector[];
     resolvers?: ExternalObjectResolver[];
+    pluginWorkerManager?: PluginWorkerManager;
   } = {},
 ) {
-  const detectorRegistry = createExternalObjectDetectorRegistry(opts.detectors ?? []);
+  const pluginProviderDetector = opts.pluginWorkerManager
+    ? createPluginProviderDetector(db, opts.pluginWorkerManager)
+    : null;
+  const detectorRegistry = createExternalObjectDetectorRegistry([
+    ...(pluginProviderDetector ? [pluginProviderDetector] : []),
+    ...(opts.detectors ?? []),
+  ]);
   const resolverRegistry = createExternalObjectResolverRegistry(opts.resolvers ?? []);
 
   async function issueById(issueId: string, dbOrTx: any = db) {
@@ -558,8 +709,9 @@ export function externalObjectService(
       return { object: toObjectPayload(object, now), refreshed: false, reason: "backoff" as const };
     }
 
-    const resolver = resolverRegistry.find(object);
-    if (!resolver) {
+    const pluginResult = await resolveViaPluginProvider(db, opts.pluginWorkerManager, object);
+    const resolver = pluginResult ? null : resolverRegistry.find(object);
+    if (!pluginResult && !resolver) {
       const [updated] = await db
         .update(externalObjects)
         .set({
@@ -572,7 +724,7 @@ export function externalObjectService(
       return { object: toObjectPayload(updated ?? object, now), refreshed: false, reason: "no_resolver" as const };
     }
 
-    const result = await resolver.resolve({ companyId: object.companyId, object });
+    const result = pluginResult ?? await resolver!.resolve({ companyId: object.companyId, object });
     if (!result.ok) {
       const [updated] = await db
         .update(externalObjects)

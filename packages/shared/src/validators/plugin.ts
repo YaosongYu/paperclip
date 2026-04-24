@@ -16,6 +16,7 @@ import {
   PLUGIN_API_ROUTE_CHECKOUT_POLICIES,
   PLUGIN_API_ROUTE_METHODS,
 } from "../constants.js";
+import { externalObjectProviderKeySchema, externalObjectTypeSchema } from "./external-object.js";
 
 // ---------------------------------------------------------------------------
 // JSON Schema placeholder – a permissive validator for JSON Schema objects
@@ -397,6 +398,55 @@ export const pluginApiRouteDeclarationSchema = z.object({
 
 export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclarationSchema>;
 
+export const pluginObjectReferenceRefreshPolicySchema = z.object({
+  defaultTtlSeconds: z.number().int().positive().max(86_400).optional(),
+  staleAfterSeconds: z.number().int().positive().max(604_800).optional(),
+}).superRefine((value, ctx) => {
+  if (
+    value.defaultTtlSeconds != null &&
+    value.staleAfterSeconds != null &&
+    value.staleAfterSeconds < value.defaultTtlSeconds
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "staleAfterSeconds must be greater than or equal to defaultTtlSeconds",
+      path: ["staleAfterSeconds"],
+    });
+  }
+});
+
+export const pluginObjectReferenceProviderDeclarationSchema = z.object({
+  providerKey: externalObjectProviderKeySchema,
+  displayName: z.string().min(1).max(100),
+  objectTypes: z.array(externalObjectTypeSchema).min(1),
+  urlPatterns: z.array(z.string().trim().min(1).max(500)).optional(),
+  refreshPolicy: pluginObjectReferenceRefreshPolicySchema.optional(),
+  webhookEndpointKeys: z.array(z.string().min(1)).optional(),
+}).superRefine((value, ctx) => {
+  const duplicateObjectTypes = value.objectTypes.filter((type, i) => value.objectTypes.indexOf(type) !== i);
+  if (duplicateObjectTypes.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Duplicate objectTypes: ${[...new Set(duplicateObjectTypes)].join(", ")}`,
+      path: ["objectTypes"],
+    });
+  }
+
+  const webhookKeys = value.webhookEndpointKeys ?? [];
+  const duplicateWebhookKeys = webhookKeys.filter((key, i) => webhookKeys.indexOf(key) !== i);
+  if (duplicateWebhookKeys.length > 0) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `Duplicate webhookEndpointKeys: ${[...new Set(duplicateWebhookKeys)].join(", ")}`,
+      path: ["webhookEndpointKeys"],
+    });
+  }
+});
+
+export type PluginObjectReferenceProviderDeclarationInput = z.infer<
+  typeof pluginObjectReferenceProviderDeclarationSchema
+>;
+
 // ---------------------------------------------------------------------------
 // Plugin Manifest V1 schema
 // ---------------------------------------------------------------------------
@@ -471,6 +521,7 @@ export const pluginManifestV1Schema = z.object({
   database: pluginDatabaseDeclarationSchema.optional(),
   apiRoutes: z.array(pluginApiRouteDeclarationSchema).optional(),
   environmentDrivers: z.array(pluginEnvironmentDriverDeclarationSchema).optional(),
+  objectReferences: z.array(pluginObjectReferenceProviderDeclarationSchema).optional(),
   launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   ui: z.object({
     slots: z.array(pluginUiSlotDeclarationSchema).min(1).optional(),
@@ -558,6 +609,31 @@ export const pluginManifestV1Schema = z.object({
         message: "Capability 'api.routes.register' is required when apiRoutes are declared",
         path: ["capabilities"],
       });
+    }
+  }
+
+  if (manifest.objectReferences && manifest.objectReferences.length > 0) {
+    for (const capability of ["external.objects.detect", "external.objects.read"] as const) {
+      if (!manifest.capabilities.includes(capability)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Capability '${capability}' is required when objectReferences are declared`,
+          path: ["capabilities"],
+        });
+      }
+    }
+
+    const declaredWebhookKeys = new Set((manifest.webhooks ?? []).map((webhook) => webhook.endpointKey));
+    for (const [providerIndex, provider] of manifest.objectReferences.entries()) {
+      for (const endpointKey of provider.webhookEndpointKeys ?? []) {
+        if (!declaredWebhookKeys.has(endpointKey)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `objectReferences webhookEndpointKey "${endpointKey}" must match a declared webhook endpoint`,
+            path: ["objectReferences", providerIndex, "webhookEndpointKeys"],
+          });
+        }
+      }
     }
   }
 
@@ -660,6 +736,18 @@ export const pluginManifestV1Schema = z.object({
         code: z.ZodIssueCode.custom,
         message: `Duplicate environment driver keys: ${[...new Set(duplicates)].join(", ")}`,
         path: ["environmentDrivers"],
+      });
+    }
+  }
+
+  if (manifest.objectReferences) {
+    const providerKeys = manifest.objectReferences.map((provider) => provider.providerKey);
+    const duplicateProviders = providerKeys.filter((key, i) => providerKeys.indexOf(key) !== i);
+    if (duplicateProviders.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: `Duplicate object reference provider keys: ${[...new Set(duplicateProviders)].join(", ")}`,
+        path: ["objectReferences"],
       });
     }
   }

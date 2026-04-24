@@ -417,7 +417,9 @@ export function issueRoutes(
   const workProductsSvc = workProductService(db);
   const documentsSvc = documentService(db);
   const issueReferencesSvc = issueReferenceService(db);
-  const externalObjectsSvc = externalObjectService(db);
+  const externalObjectsSvc = externalObjectService(db, {
+    pluginWorkerManager: opts.pluginWorkerManager,
+  });
   const routinesSvc = routineService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
   });
