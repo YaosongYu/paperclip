@@ -101,8 +101,20 @@ export const heartbeatsApi = {
     api.get<LiveRunForIssue[]>(`/issues/${issueId}/live-runs`),
   activeRunForIssue: (issueId: string) =>
     api.get<ActiveRunForIssue | null>(`/issues/${issueId}/active-run`),
-  liveRunsForCompany: (companyId: string, minCount?: number) =>
-    api.get<LiveRunForIssue[]>(`/companies/${companyId}/live-runs${minCount ? `?minCount=${minCount}` : ""}`),
+  liveRunsForCompany: (
+    companyId: string,
+    options?: number | { minCount?: number; limit?: number },
+  ) => {
+    const searchParams = new URLSearchParams();
+    if (typeof options === "number") {
+      searchParams.set("minCount", String(options));
+    } else if (options) {
+      if (options.minCount) searchParams.set("minCount", String(options.minCount));
+      if (options.limit) searchParams.set("limit", String(options.limit));
+    }
+    const qs = searchParams.toString();
+    return api.get<LiveRunForIssue[]>(`/companies/${companyId}/live-runs${qs ? `?${qs}` : ""}`);
+  },
   listInstanceSchedulerAgents: () =>
     api.get<InstanceSchedulerHeartbeatAgent[]>("/instance/scheduler-heartbeats"),
 };
