@@ -3694,9 +3694,11 @@ export function heartbeatService(db: Db) {
       }
 
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
-      const unresolvedBlockerCount = dependencyReadiness.get(issueId)?.unresolvedBlockerCount ?? 0;
+      const readiness = dependencyReadiness.get(issueId);
+      const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
       if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
-        logger.debug({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: skipping blocked run");
+        await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
+        logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
         return null;
       }
     }
@@ -3756,6 +3758,64 @@ export function heartbeatService(db: Db) {
     }
 
     return claimed;
+  }
+
+  async function cancelQueuedRunForBlockedDependencies(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string,
+    unresolvedBlockerIssueIds: string[],
+  ) {
+    const now = new Date();
+    const reason =
+      "Cancelled because issue dependencies are still blocked; Paperclip will wake the assignee when blockers resolve";
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: reason,
+      errorCode: "issue_dependencies_blocked",
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: "issue_dependencies_blocked",
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "dependency_gate",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+
+    await setWakeupStatus(run.wakeupRequestId, "skipped", {
+      finishedAt: now,
+      error: reason,
+    });
+
+    await db
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(issues.companyId, run.companyId),
+          eq(issues.id, issueId),
+          eq(issues.executionRunId, run.id),
+        ),
+      );
+
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: reason,
+      payload: {
+        issueId,
+        unresolvedBlockerIssueIds,
+      },
+    });
+
+    return cancelled;
   }
 
   async function finalizeAgentStatus(
