@@ -35,6 +35,26 @@ const STORAGE_KEY = "paperclip.selectedCompanyId";
 
 const CompanyContext = createContext<CompanyContextValue | null>(null);
 
+export function resolveBootstrapCompanySelection(input: {
+  companies: Array<Pick<Company, "id">>;
+  sidebarCompanies: Array<Pick<Company, "id">>;
+  selectedCompanyId: string | null;
+  storedCompanyId: string | null;
+}) {
+  if (input.companies.length === 0) return null;
+
+  const selectableCompanies = input.sidebarCompanies.length > 0
+    ? input.sidebarCompanies
+    : input.companies;
+  if (input.selectedCompanyId && selectableCompanies.some((company) => company.id === input.selectedCompanyId)) {
+    return input.selectedCompanyId;
+  }
+  if (input.storedCompanyId && selectableCompanies.some((company) => company.id === input.storedCompanyId)) {
+    return input.storedCompanyId;
+  }
+  return selectableCompanies[0]?.id ?? null;
+}
+
 export function CompanyProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const [selectionSource, setSelectionSource] = useState<CompanySelectionSource>("bootstrap");
@@ -70,13 +90,13 @@ export function CompanyProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    const selectableCompanies = sidebarCompanies.length > 0 ? sidebarCompanies : companies;
-    if (selectedCompanyId && selectableCompanies.some((c) => c.id === selectedCompanyId)) return;
-
-    const stored = localStorage.getItem(STORAGE_KEY);
-    const next = stored && selectableCompanies.some((c) => c.id === stored)
-      ? stored
-      : selectableCompanies[0]!.id;
+    const next = resolveBootstrapCompanySelection({
+      companies,
+      sidebarCompanies,
+      selectedCompanyId,
+      storedCompanyId: localStorage.getItem(STORAGE_KEY),
+    });
+    if (next === null || next === selectedCompanyId) return;
     setSelectedCompanyIdState(next);
     setSelectionSource("bootstrap");
     localStorage.setItem(STORAGE_KEY, next);
