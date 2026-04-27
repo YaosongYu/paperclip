@@ -26,6 +26,7 @@ export interface InstanceGeneralSettings {
 export interface InstanceExperimentalSettings {
   enableEnvironments: boolean;
   enableIsolatedWorkspaces: boolean;
+  enableExternalObjects: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableIssueGraphLivenessAutoRecovery: boolean;
 }

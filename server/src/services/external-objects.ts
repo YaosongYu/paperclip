@@ -345,6 +345,7 @@ export function externalObjectService(
     resolvers?: ExternalObjectResolver[];
     pluginWorkerManager?: PluginWorkerManager;
     github?: GitHubExternalObjectProviderOptions | false;
+    enabled?: boolean | (() => boolean | Promise<boolean>);
   } = {},
 ) {
   const githubProvider = opts.github === false ? null : createGitHubExternalObjectProvider(db, opts.github);
@@ -360,6 +361,15 @@ export function externalObjectService(
     ...(opts.resolvers ?? []),
     ...(githubProvider?.resolvers ?? []),
   ]);
+
+  async function isEnabled() {
+    if (typeof opts.enabled === "function") return await opts.enabled();
+    return opts.enabled ?? true;
+  }
+
+  function emptySummary() {
+    return summarizeObjectPayloads([]);
+  }
 
   async function issueById(issueId: string, dbOrTx: any = db) {
     return dbOrTx
@@ -461,6 +471,7 @@ export function externalObjectService(
   }
 
   async function syncIssue(issueId: string, dbOrTx: any = db) {
+    if (!(await isEnabled())) return;
     const runSync = async (tx: any) => {
       const issue = await issueById(issueId, tx);
       if (!issue) throw notFound("Issue not found");
@@ -487,6 +498,7 @@ export function externalObjectService(
   }
 
   async function syncComment(commentId: string, dbOrTx: any = db) {
+    if (!(await isEnabled())) return;
     const comment = await dbOrTx
       .select({
         id: issueComments.id,
@@ -510,6 +522,7 @@ export function externalObjectService(
   }
 
   async function syncDocument(documentId: string, dbOrTx: any = db) {
+    if (!(await isEnabled())) return;
     const document = await dbOrTx
       .select({
         documentId: documents.id,
@@ -567,6 +580,7 @@ export function externalObjectService(
   }
 
   async function listForIssue(issueId: string) {
+    if (!(await isEnabled())) return [];
     const issue = await issueById(issueId);
     if (!issue) throw notFound("Issue not found");
     const rows = await db
@@ -659,12 +673,14 @@ export function externalObjectService(
   }
 
   async function getIssueSummary(issueId: string) {
+    if (!(await isEnabled())) return emptySummary();
     const groups = await listForIssue(issueId);
     const objects = groups.flatMap((group) => (group.object ? [group.object] : []));
     return summarizeObjectPayloads(objects);
   }
 
   async function getIssueSummaries(companyId: string, issueIds: string[]) {
+    if (!(await isEnabled())) return new Map<string, ReturnType<typeof summarizeObjectPayloads>>();
     const uniqueIssueIds = [...new Set(issueIds)].filter((id) => id.length > 0);
     const summaries = new Map<string, ReturnType<typeof summarizeObjectPayloads>>();
     if (uniqueIssueIds.length === 0) return summaries;
@@ -697,6 +713,7 @@ export function externalObjectService(
   }
 
   async function getProjectSummary(projectId: string) {
+    if (!(await isEnabled())) return emptySummary();
     const projectIssues = await db
       .select({ id: issues.id, companyId: issues.companyId })
       .from(issues)
@@ -840,6 +857,7 @@ export function externalObjectService(
     objectIds?: string[];
     actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId" | "runId">;
   }) {
+    if (!(await isEnabled())) return [];
     const groups = await listForIssue(issueId);
     const objectIds = groups
       .flatMap((group) => (group.object ? [group.object.id] : []))
@@ -852,6 +870,7 @@ export function externalObjectService(
   }
 
   async function refreshDueObjects(companyId: string, limit = 50, now = new Date()) {
+    if (!(await isEnabled())) return [];
     const due = await db
       .select({ id: externalObjects.id })
       .from(externalObjects)

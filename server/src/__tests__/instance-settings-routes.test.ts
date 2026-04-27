@@ -57,6 +57,7 @@ describe("instance settings routes", () => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({
       enableEnvironments: false,
       enableIsolatedWorkspaces: false,
+      enableExternalObjects: false,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: false,
     });
@@ -73,6 +74,7 @@ describe("instance settings routes", () => {
       experimental: {
         enableEnvironments: true,
         enableIsolatedWorkspaces: true,
+        enableExternalObjects: false,
         autoRestartDevServerWhenIdle: false,
         enableIssueGraphLivenessAutoRecovery: false,
       },
@@ -93,6 +95,7 @@ describe("instance settings routes", () => {
     expect(getRes.body).toEqual({
       enableEnvironments: false,
       enableIsolatedWorkspaces: false,
+      enableExternalObjects: false,
       autoRestartDevServerWhenIdle: false,
       enableIssueGraphLivenessAutoRecovery: false,
     });
@@ -126,6 +129,24 @@ describe("instance settings routes", () => {
         ([patch]) => patch?.autoRestartDevServerWhenIdle === true,
       ),
     ).toBe(true);
+  });
+
+  it("allows local board users to update external object detection", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "local-board",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+    });
+
+    await request(app)
+      .patch("/api/instance/settings/experimental")
+      .send({ enableExternalObjects: true })
+      .expect(200);
+
+    expect(mockInstanceSettingsService.updateExperimental).toHaveBeenCalledWith({
+      enableExternalObjects: true,
+    });
   });
 
   it("allows local board users to update issue graph liveness auto-recovery", async () => {

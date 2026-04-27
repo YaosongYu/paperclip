@@ -15,6 +15,7 @@ import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
 import { projectService, logActivity, workspaceOperationService } from "../services/index.js";
 import { externalObjectService } from "../services/external-objects.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { conflict } from "../errors.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
@@ -43,7 +44,10 @@ export function projectRoutes(db: Db) {
   const svc = projectService(db);
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
-  const externalObjectsSvc = externalObjectService(db);
+  const instanceSettings = instanceSettingsService(db);
+  const externalObjectsSvc = externalObjectService(db, {
+    enabled: async () => (await instanceSettings.getExperimental()).enableExternalObjects === true,
+  });
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const environmentsSvc = environmentService(db);
 

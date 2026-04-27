@@ -40,6 +40,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      enableExternalObjects: parsed.data.enableExternalObjects ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableIssueGraphLivenessAutoRecovery: parsed.data.enableIssueGraphLivenessAutoRecovery ?? false,
     };
@@ -47,6 +48,7 @@ function normalizeExperimentalSettings(raw: unknown): InstanceExperimentalSettin
   return {
     enableEnvironments: false,
     enableIsolatedWorkspaces: false,
+    enableExternalObjects: false,
     autoRestartDevServerWhenIdle: false,
     enableIssueGraphLivenessAutoRecovery: false,
   };

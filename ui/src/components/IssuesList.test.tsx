@@ -281,7 +281,10 @@ describe("IssuesList", () => {
     mockAccessApi.listUserDirectory.mockResolvedValue({ users: [] });
     mockExecutionWorkspacesApi.list.mockResolvedValue([]);
     mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: false,
+    });
     mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({ summaries: {} });
     localStorage.clear();
   });
@@ -292,6 +295,10 @@ describe("IssuesList", () => {
   });
 
   it("forwards external-object summaries into issue rows", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: true,
+    });
     mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({
       summaries: {
         "issue-1": {
@@ -328,7 +335,34 @@ describe("IssuesList", () => {
     });
   });
 
+  it("does not load external-object summaries when the experimental flag is disabled", async () => {
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue()]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(mockInstanceSettingsApi.getExperimental).toHaveBeenCalled();
+      expect(container.querySelector("[data-testid='issue-row']")).not.toBeNull();
+    });
+    expect(mockExternalObjectsApi.getIssueSummaries).not.toHaveBeenCalled();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("filters issue rows by external-object status summaries", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableExternalObjects: true,
+    });
     const failedIssue = createIssue({ id: "issue-failed", identifier: "PAP-10", title: "Failed external object" });
     const freshIssue = createIssue({ id: "issue-fresh", identifier: "PAP-11", title: "Fresh external object" });
     const noObjectIssue = createIssue({ id: "issue-none", identifier: "PAP-12", title: "No external object" });

@@ -415,6 +415,28 @@ describeEmbeddedPostgres("externalObjectService", () => {
     });
   });
 
+  it("no-ops detection and summaries when external objects are disabled", async () => {
+    const { issueId } = await createIssue();
+    const svc = externalObjectService(db, { enabled: false });
+
+    await svc.syncIssue(issueId);
+
+    const [objectRows, mentionRows, summary] = await Promise.all([
+      db.select().from(externalObjects),
+      db.select().from(externalObjectMentions),
+      svc.getIssueSummary(issueId),
+    ]);
+    expect(objectRows).toHaveLength(0);
+    expect(mentionRows).toHaveLength(0);
+    expect(summary).toMatchObject({
+      total: 0,
+      byStatusCategory: {},
+      byLiveness: {},
+      highestSeverity: "neutral",
+      objects: [],
+    });
+  });
+
   it("preserves last-known status when resolver reports auth and unreachable failures", async () => {
     const { companyId, issueId } = await createIssue();
     const resolver: ExternalObjectResolver = {

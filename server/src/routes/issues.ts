@@ -422,6 +422,7 @@ export function issueRoutes(
   const issueReferencesSvc = issueReferenceService(db);
   const externalObjectsSvc = externalObjectService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
+    enabled: async () => (await instanceSettings.getExperimental()).enableExternalObjects === true,
   });
   const routinesSvc = routineService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,

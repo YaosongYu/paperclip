@@ -27,10 +27,17 @@ const mockExternalObjectsService = vi.hoisted(() => ({
   listForIssue: vi.fn(),
   refreshIssueObjects: vi.fn(),
 }));
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
 
 function registerRouteMocks() {
   vi.doMock("../services/external-objects.js", () => ({
     externalObjectService: () => mockExternalObjectsService,
+  }));
+
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -47,7 +54,6 @@ function registerRouteMocks() {
       getActiveRunForAgent: vi.fn(async () => null),
       cancelRun: vi.fn(async () => null),
     }),
-    instanceSettingsService: () => ({}),
     issueApprovalService: () => ({}),
     issueReferenceService: () => ({
       listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
@@ -153,6 +159,9 @@ describe("external object routes", () => {
     mockExternalObjectsService.refreshIssueObjects.mockResolvedValue([
       { object: { id: "77777777-7777-4777-8777-777777777777" }, refreshed: false, reason: "no_resolver" },
     ]);
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableExternalObjects: true,
+    });
   });
 
   it("enforces company access on read routes", async () => {

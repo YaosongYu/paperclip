@@ -55,6 +55,7 @@ export function InstanceExperimentalSettings() {
 
   const enableEnvironments = experimentalQuery.data?.enableEnvironments === true;
   const enableIsolatedWorkspaces = experimentalQuery.data?.enableIsolatedWorkspaces === true;
+  const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const enableIssueGraphLivenessAutoRecovery =
     experimentalQuery.data?.enableIssueGraphLivenessAutoRecovery === true;
@@ -91,6 +92,24 @@ export function InstanceExperimentalSettings() {
             onCheckedChange={() => toggleMutation.mutate({ enableEnvironments: !enableEnvironments })}
             disabled={toggleMutation.isPending}
             aria-label="Toggle environments experimental setting"
+          />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1.5">
+            <h2 className="text-sm font-semibold">Enable External Objects</h2>
+            <p className="max-w-2xl text-sm text-muted-foreground">
+              Detect external URLs in issues and show resolved status for pull requests, tickets, and other referenced
+              work objects.
+            </p>
+          </div>
+          <ToggleSwitch
+            checked={enableExternalObjects}
+            onCheckedChange={() => toggleMutation.mutate({ enableExternalObjects: !enableExternalObjects })}
+            disabled={toggleMutation.isPending}
+            aria-label="Toggle external objects experimental setting"
           />
         </div>
       </section>

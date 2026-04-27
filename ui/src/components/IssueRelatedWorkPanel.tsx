@@ -171,12 +171,14 @@ function ExternalObjectsSection({
 
 export function IssueRelatedWorkPanel({
   relatedWork,
+  externalObjectsEnabled = true,
   externalObjects,
   externalObjectsLoading,
   externalObjectsError,
   onRetryExternalObjects,
 }: {
   relatedWork?: IssueRelatedWorkSummary | null;
+  externalObjectsEnabled?: boolean;
   externalObjects?: IssueExternalObjectGroup[];
   externalObjectsLoading?: boolean;
   externalObjectsError?: boolean;
@@ -193,12 +195,14 @@ export function IssueRelatedWorkPanel({
         items={outbound}
         emptyLabel="This issue does not reference any other tasks yet."
       />
-      <ExternalObjectsSection
-        groups={externalObjects ?? []}
-        isLoading={Boolean(externalObjectsLoading)}
-        isError={Boolean(externalObjectsError)}
-        onRetry={onRetryExternalObjects}
-      />
+      {externalObjectsEnabled ? (
+        <ExternalObjectsSection
+          groups={externalObjects ?? []}
+          isLoading={Boolean(externalObjectsLoading)}
+          isError={Boolean(externalObjectsError)}
+          onRetry={onRetryExternalObjects}
+        />
+      ) : null}
       <Section
         title="Referenced by"
         description="Other tasks that currently point at this issue."
