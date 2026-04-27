@@ -93,7 +93,6 @@ function readNonEmptyString(value: unknown): string | null {
 function summarizeRunFailureForIssueComment(run: LatestIssueRun) {
   if (!run) return null;
 
-  const errorCode = readNonEmptyString(run.errorCode)?.trim() ?? null;
   if (readNonEmptyString(run.error)) {
     return " Latest retry failure details were withheld from the issue thread; inspect the linked run for evidence.";
   }

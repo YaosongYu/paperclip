@@ -943,6 +943,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentStatus: "idle",
       processPid: 999_999_999,
       processLossRetryCount: 1,
+      runErrorCode: "process_lost",
+      runError: "Authorization: Bearer sk-test-recovery-secret",
     });
     await db
       .update(issues)
@@ -1005,7 +1007,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("stopped automatic stranded-work recovery");
     expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
-    expect(comments[0]?.body).toContain("Latest retry failure: `process_lost`");
+    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
+    expect(comments[0]?.body).not.toContain("sk-test-recovery-secret");
     await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([issueId]);
   });
 
@@ -1187,6 +1190,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "todo",
       runStatus: "failed",
       retryReason: "assignment_recovery",
+      runErrorCode: "process_lost",
+      runError: "Authorization: Bearer sk-test-recovery-secret",
     });
     const heartbeat = heartbeatService(db);
 
@@ -1206,11 +1211,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       previousStatus: "todo",
       retryReason: "assignment_recovery",
     });
+    expect(recovery.description ?? "").not.toContain("sk-test-recovery-secret");
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried dispatch");
-    expect(comments[0]?.body).toContain("Latest retry failure: `process_lost` - run failed before issue advanced.");
+    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).toContain(`Recovery issue: [${recovery.identifier}]`);
   });
 
@@ -1525,7 +1531,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("retried continuation");
-    expect(comments[0]?.body).toContain("Latest retry failure: `process_lost` - run failed before issue advanced.");
+    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).toContain(`Recovery issue: [${recovery.identifier}]`);
   });
 
@@ -1586,7 +1592,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);
     expect(comments[0]?.body).toContain("stopped automatic stranded-work recovery");
-    expect(comments[0]?.body).toContain("Latest retry failure: `process_lost` - run failed before issue advanced.");
+    expect(comments[0]?.body).toContain("Latest retry failure details were withheld from the issue thread");
     expect(comments[0]?.body).toContain("recovery issues do not create nested `stranded_issue_recovery` issues");
     await expect(sourceBlockerIssueIds(companyId, sourceIssueId)).resolves.toEqual([issueId]);
   });
@@ -1678,7 +1684,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(2);
-    expect(comments[1]?.body).toContain("Latest retry failure: `adapter_failed` - adapter failed while retrying recovery issue.");
+    expect(comments[1]?.body).toContain("Latest retry failure details were withheld from the issue thread");
   });
 
   it("does not escalate paused-tree recovery when the automatic continuation retry was cancelled by the hold", async () => {
