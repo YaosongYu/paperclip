@@ -26,6 +26,13 @@ import {
   issueChatLongThreadTranscriptsByRunId,
 } from "../fixtures/issueChatLongThreadFixture";
 
+function hasSmoothScrollBehavior(arg: unknown) {
+  return typeof arg === "object"
+    && arg !== null
+    && "behavior" in arg
+    && (arg as ScrollToOptions).behavior === "smooth";
+}
+
 const { markdownBodyRenderMock, markdownEditorFocusMock } = vi.hoisted(() => ({
   markdownBodyRenderMock: vi.fn(),
   markdownEditorFocusMock: vi.fn(),
@@ -285,6 +292,7 @@ describe("IssueChatThread", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
+    window.scrollTo = vi.fn();
     localStorage.clear();
   });
 
@@ -379,6 +387,81 @@ describe("IssueChatThread", () => {
       expect(transform).toMatch(/translateY\(/);
     }
 
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("scrolls loaded hash targets through the virtualized message index", () => {
+    const root = createRoot(container);
+    const targetComment = issueChatLongThreadComments.at(-1);
+    expect(targetComment).toBeDefined();
+    const scrollToMock = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter initialEntries={[`/issues/PAP-1#comment-${targetComment!.id}`]}>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            showComposer={false}
+            showJumpToLatest={false}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(scrollToMock.mock.calls.some(([arg]) => hasSmoothScrollBehavior(arg))).toBe(true);
+
+    scrollToMock.mockRestore();
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("uses the virtualizer when jumping to the latest long-thread row", () => {
+    const root = createRoot(container);
+    const scrollToMock = vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+
+    act(() => {
+      root.render(
+        <MemoryRouter>
+          <IssueChatThread
+            comments={issueChatLongThreadComments}
+            linkedRuns={issueChatLongThreadLinkedRuns}
+            timelineEvents={issueChatLongThreadEvents}
+            liveRuns={[]}
+            agentMap={issueChatLongThreadAgentMap}
+            currentUserId="user-board"
+            onAdd={async () => {}}
+            enableLiveTranscriptPolling={false}
+            transcriptsByRunId={issueChatLongThreadTranscriptsByRunId}
+            hasOutputForRun={(runId) => issueChatLongThreadTranscriptsByRunId.has(runId)}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const jump = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Jump to latest",
+    ) as HTMLButtonElement | undefined;
+    expect(jump).toBeDefined();
+
+    act(() => {
+      jump?.click();
+    });
+
+    expect(scrollToMock.mock.calls.some(([arg]) => hasSmoothScrollBehavior(arg))).toBe(true);
+
+    scrollToMock.mockRestore();
     act(() => {
       root.unmount();
     });

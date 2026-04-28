@@ -2119,16 +2119,41 @@ interface VirtualizedIssueChatThreadListProps {
   variant: "full" | "embedded";
 }
 
-function VirtualizedIssueChatThreadList({
+interface VirtualizedIssueChatThreadListHandle {
+  scrollToIndex: (
+    index: number,
+    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+  ) => void;
+  scrollToLatest: (options?: { behavior?: ScrollBehavior }) => void;
+  measure: () => void;
+}
+
+function issueChatMessageAnchorId(message: ThreadMessage): string | null {
+  const custom = message.metadata.custom as { anchorId?: unknown } | undefined;
+  return typeof custom?.anchorId === "string" ? custom.anchorId : null;
+}
+
+function findMessageAnchorIndex(messages: readonly ThreadMessage[], anchorId: string): number {
+  return messages.findIndex((message) => issueChatMessageAnchorId(message) === anchorId);
+}
+
+type VirtualizedVisibleAnchorSnapshot = {
+  anchorId: string;
+  index: number;
+  viewportTop: number;
+};
+
+const VirtualizedIssueChatThreadList = forwardRef<VirtualizedIssueChatThreadListHandle, VirtualizedIssueChatThreadListProps>(function VirtualizedIssueChatThreadList({
   messages,
   feedbackVoteByTargetId,
   activeRunIds,
   stoppingRunId,
   interruptingQueuedRunId,
   variant,
-}: VirtualizedIssueChatThreadListProps) {
+}, ref) {
   const parentRef = useRef<HTMLDivElement | null>(null);
   const [scrollMargin, setScrollMargin] = useState(0);
+  const pendingPrependAnchorRef = useRef<VirtualizedVisibleAnchorSnapshot | null>(null);
 
   useLayoutEffect(() => {
     const element = parentRef.current;
@@ -2157,6 +2182,66 @@ function VirtualizedIssueChatThreadList({
     getItemKey: (index) => messages[index]?.id ?? index,
   });
 
+  useImperativeHandle(ref, () => ({
+    scrollToIndex: (index, options) => {
+      if (index < 0 || index >= messages.length) return;
+      virtualizer.scrollToIndex(index, {
+        align: options?.align ?? "center",
+        behavior: options?.behavior ?? "smooth",
+      });
+    },
+    scrollToLatest: (options) => {
+      if (messages.length === 0) return;
+      virtualizer.scrollToIndex(messages.length - 1, {
+        align: "end",
+        behavior: options?.behavior ?? "smooth",
+      });
+    },
+    measure: () => {
+      virtualizer.measure();
+    },
+  }), [messages.length, virtualizer]);
+
+  useLayoutEffect(() => {
+    return () => {
+      const element = parentRef.current;
+      if (!element || typeof window === "undefined") return;
+      const rows = Array.from(
+        element.querySelectorAll<HTMLElement>("[data-anchor-id][data-index]"),
+      );
+      const visibleRow = rows.find((row) => row.getBoundingClientRect().bottom >= 0);
+      if (!visibleRow) return;
+      const anchorId = visibleRow.dataset.anchorId;
+      const index = Number(visibleRow.dataset.index);
+      if (!anchorId || !Number.isFinite(index)) return;
+      pendingPrependAnchorRef.current = {
+        anchorId,
+        index,
+        viewportTop: visibleRow.getBoundingClientRect().top,
+      };
+    };
+  }, [messages]);
+
+  useLayoutEffect(() => {
+    const pendingAnchor = pendingPrependAnchorRef.current;
+    pendingPrependAnchorRef.current = null;
+    virtualizer.measure();
+    if (!pendingAnchor || typeof window === "undefined") return;
+    const nextIndex = findMessageAnchorIndex(messages, pendingAnchor.anchorId);
+    if (nextIndex <= pendingAnchor.index) return;
+
+    virtualizer.scrollToIndex(nextIndex, { align: "start", behavior: "auto" });
+    requestAnimationFrame(() => {
+      const element = document.getElementById(pendingAnchor.anchorId);
+      if (!element) return;
+      const delta = element.getBoundingClientRect().top - pendingAnchor.viewportTop;
+      if (Math.abs(delta) > 1) {
+        window.scrollBy({ top: delta, behavior: "auto" });
+      }
+      virtualizer.measure();
+    });
+  }, [messages, virtualizer]);
+
   const virtualItems = virtualizer.getVirtualItems();
   const totalSize = virtualizer.getTotalSize();
 
@@ -2170,12 +2255,28 @@ function VirtualizedIssueChatThreadList({
       {virtualItems.map((virtualItem) => {
         const message = messages[virtualItem.index];
         if (!message) return null;
+        const anchorId = issueChatMessageAnchorId(message);
         return (
           <div
             key={virtualItem.key}
             data-index={virtualItem.index}
+            data-anchor-id={anchorId ?? undefined}
             data-testid="issue-chat-thread-virtual-row"
-            ref={virtualizer.measureElement}
+            ref={(element) => {
+              if (element) virtualizer.measureElement(element);
+            }}
+            onLoadCapture={(event) => {
+              virtualizer.measureElement(event.currentTarget);
+            }}
+            onClickCapture={(event) => {
+              const row = event.currentTarget;
+              requestAnimationFrame(() => {
+                virtualizer.measureElement(row);
+              });
+            }}
+            onTransitionEndCapture={(event) => {
+              virtualizer.measureElement(event.currentTarget);
+            }}
             style={{
               position: "absolute",
               top: 0,
@@ -2196,7 +2297,7 @@ function VirtualizedIssueChatThreadList({
       })}
     </div>
   );
-}
+});
 
 interface IssueChatMessageRowProps {
   message: ThreadMessage;
@@ -2730,7 +2831,8 @@ export function IssueChatThread({
   composerRef,
 }: IssueChatThreadProps) {
   const location = useLocation();
-  const hasScrolledRef = useRef(false);
+  const lastScrolledHashRef = useRef<string | null>(null);
+  const virtualizedThreadRef = useRef<VirtualizedIssueChatThreadListHandle | null>(null);
   const bottomAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportAnchorRef = useRef<HTMLDivElement | null>(null);
   const composerViewportSnapshotRef = useRef<ReturnType<typeof captureComposerViewportSnapshot>>(null);
@@ -2851,6 +2953,42 @@ export function IssueChatThread({
     }
     return map;
   }, [feedbackVotes]);
+  const useVirtualizedThread = messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD;
+  const messageAnchorIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    messages.forEach((message, index) => {
+      const anchorId = issueChatMessageAnchorId(message);
+      if (anchorId) map.set(anchorId, index);
+    });
+    return map;
+  }, [messages]);
+
+  function scrollToThreadAnchor(
+    anchorId: string,
+    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+  ) {
+    const virtualIndex = messageAnchorIndex.get(anchorId);
+    if (useVirtualizedThread && virtualIndex !== undefined) {
+      if (!virtualizedThreadRef.current) return false;
+      virtualizedThreadRef.current.scrollToIndex(virtualIndex, {
+        align: options?.align ?? "center",
+        behavior: options?.behavior ?? "smooth",
+      });
+      return true;
+    }
+
+    const element = document.getElementById(anchorId);
+    if (!element) return false;
+    element.scrollIntoView({
+      behavior: options?.behavior ?? "smooth",
+      block: options?.align === "start"
+        ? "start"
+        : options?.align === "end"
+          ? "end"
+          : "center",
+    });
+    return true;
+  }
 
   const runtime = usePaperclipIssueRuntime({
     messages,
@@ -2880,14 +3018,13 @@ export function IssueChatThread({
         spacerInitialReserveRef.current = reserve;
         setBottomSpacerHeight(reserve);
         requestAnimationFrame(() => {
-          const el = document.getElementById(anchorId);
-          el?.scrollIntoView({ behavior: "smooth", block: "start" });
+          scrollToThreadAnchor(anchorId, { align: "start", behavior: "smooth" });
         });
       }
     }
 
     lastUserMessageIdRef.current = lastUserId;
-  }, [messages]);
+  }, [messageAnchorIndex, messages, useVirtualizedThread]);
 
   useLayoutEffect(() => {
     const anchorId = spacerBaselineAnchorRef.current;
@@ -2920,7 +3057,7 @@ export function IssueChatThread({
   }, [messages]);
 
   useEffect(() => {
-    const hash = location.hash;
+    const hash = location.hash || (typeof window !== "undefined" ? window.location.hash : "");
     if (
       !(
         hash.startsWith("#comment-")
@@ -2929,15 +3066,33 @@ export function IssueChatThread({
         || hash.startsWith("#interaction-")
       )
     ) return;
-    if (messages.length === 0 || hasScrolledRef.current) return;
+    if (messages.length === 0 || lastScrolledHashRef.current === hash) return;
     const targetId = hash.slice(1);
-    const element = document.getElementById(targetId);
-    if (!element) return;
-    hasScrolledRef.current = true;
-    element.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, [location.hash, messages]);
+    let cancelled = false;
+    const attemptScroll = (finalAttempt = false) => {
+      if (cancelled || lastScrolledHashRef.current === hash) return;
+      const didScroll = scrollToThreadAnchor(targetId, { align: "center", behavior: "smooth" });
+      if (!didScroll) return;
+      if (finalAttempt || !useVirtualizedThread || document.getElementById(targetId)) {
+        lastScrolledHashRef.current = hash;
+      }
+    };
+
+    attemptScroll();
+    const frame = requestAnimationFrame(() => attemptScroll());
+    const timeout = window.setTimeout(() => attemptScroll(true), 250);
+    return () => {
+      cancelled = true;
+      cancelAnimationFrame(frame);
+      window.clearTimeout(timeout);
+    };
+  }, [location.hash, messageAnchorIndex, messages, useVirtualizedThread]);
 
   function handleJumpToLatest() {
+    if (useVirtualizedThread) {
+      virtualizedThreadRef.current?.scrollToLatest({ behavior: "smooth" });
+      return;
+    }
     bottomAnchorRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }
 
@@ -3036,6 +3191,7 @@ export function IssueChatThread({
                 </div>
               ) : messages.length >= VIRTUALIZED_THREAD_ROW_THRESHOLD ? (
                 <VirtualizedIssueChatThreadList
+                  ref={virtualizedThreadRef}
                   messages={messages}
                   feedbackVoteByTargetId={feedbackVoteByTargetId}
                   activeRunIds={activeRunIds}

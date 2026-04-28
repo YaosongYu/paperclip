@@ -47,7 +47,11 @@ try {
   await page.waitForSelector('[data-testid="issue-chat-long-thread-perf"]', { timeout: 30_000 });
   await page.waitForFunction(() => {
     const target = Number(document.querySelector('[data-testid="perf-fixture-row-target"]')?.textContent ?? "450");
-    return document.querySelectorAll('[data-testid="issue-chat-message-row"]').length >= target;
+    const renderedRows = document.querySelectorAll('[data-testid="issue-chat-message-row"]').length;
+    const virtualizer = document.querySelector('[data-testid="issue-chat-thread-virtualizer"]');
+    if (!virtualizer) return renderedRows >= target;
+    const virtualCount = Number(virtualizer.getAttribute("data-virtual-count") ?? "0");
+    return virtualCount >= target && renderedRows > 0 && renderedRows < target;
   }, null, { timeout: 60_000 });
   const rowReadyMs = Date.now() - startedAt;
 
@@ -60,6 +64,8 @@ try {
     };
 
     const rowCount = document.querySelectorAll('[data-testid="issue-chat-message-row"]').length;
+    const virtualizer = document.querySelector('[data-testid="issue-chat-thread-virtualizer"]');
+    const virtualCount = Number(virtualizer?.getAttribute("data-virtual-count") ?? "0");
     const assistantRowCount = document.querySelectorAll('[data-testid="issue-chat-message-row"][data-message-role="assistant"]').length;
     const systemRowCount = document.querySelectorAll('[data-testid="issue-chat-message-row"][data-message-role="system"]').length;
     const userRowCount = document.querySelectorAll('[data-testid="issue-chat-message-row"][data-message-role="user"]').length;
@@ -76,6 +82,8 @@ try {
     return {
       url: window.location.href,
       fixtureRowTarget: Number(text("perf-fixture-row-target")),
+      virtualized: Boolean(virtualizer),
+      virtualCount,
       rowCount,
       assistantRowCount,
       userRowCount,
