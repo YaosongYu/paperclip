@@ -28,12 +28,6 @@ import {
   type ReactNode,
 } from "react";
 import { Link, useLocation } from "@/lib/router";
-import {
-  observeWindowOffset,
-  observeWindowRect,
-  useVirtualizer,
-  windowScroll,
-} from "@tanstack/react-virtual";
 import type {
   Agent,
   FeedbackDataSharingPreference,
@@ -221,6 +215,9 @@ function useStableEvent<T extends (...args: never[]) => unknown>(callback: T | u
   return useMemo(() => {
     if (!callback) return undefined;
     return ((...args: Parameters<T>) => callbackRef.current?.(...args)) as T;
+    // Keep the wrapper stable while the callback identity changes; the ref above
+    // carries the current callback implementation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [Boolean(callback)]);
 }
 
@@ -2166,6 +2163,95 @@ type VirtualizedScrollMode =
   | { kind: "window" }
   | { kind: "element"; element: HTMLElement };
 
+type SimpleVirtualItem = {
+  index: number;
+  key: React.Key;
+  start: number;
+};
+
+function useIssueThreadVirtualizer({
+  count,
+  estimateSize,
+  overscan,
+  scrollMargin,
+  gap,
+  getItemKey,
+  mode,
+}: {
+  count: number;
+  estimateSize: () => number;
+  overscan: number;
+  scrollMargin: number;
+  gap: number;
+  getItemKey: (index: number) => React.Key;
+  mode: VirtualizedScrollMode;
+}) {
+  const [, rerender] = useState(0);
+  const itemSpan = estimateSize() + gap;
+  const totalSize = Math.max(0, count * itemSpan - gap);
+
+  const viewportHeight = () => (mode.kind === "window" ? window.innerHeight : mode.element.clientHeight);
+  const scrollOffset = () => (mode.kind === "window" ? window.scrollY : mode.element.scrollTop);
+  const maxScrollOffset = () => {
+    const targetScrollHeight = mode.kind === "window"
+      ? document.documentElement.scrollHeight
+      : mode.element.scrollHeight;
+    return Math.max(0, Math.max(targetScrollHeight, totalSize) - viewportHeight());
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const target: Window | HTMLElement = mode.kind === "window" ? window : mode.element;
+    const update = () => rerender((value) => value + 1);
+    target.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      target.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, [mode]);
+
+  const rawStart = Math.max(0, scrollOffset() - scrollMargin);
+  const startIndex = Math.max(0, Math.floor(rawStart / itemSpan) - overscan);
+  const endIndex = Math.min(
+    count - 1,
+    Math.ceil((rawStart + viewportHeight()) / itemSpan) + overscan,
+  );
+  const virtualItems: SimpleVirtualItem[] = [];
+  for (let index = startIndex; index <= endIndex; index += 1) {
+    virtualItems.push({ index, key: getItemKey(index), start: index * itemSpan + scrollMargin });
+  }
+
+  const scrollToIndex = (
+    index: number,
+    options?: { align?: "start" | "center" | "end" | "auto"; behavior?: ScrollBehavior },
+  ) => {
+    const clampedIndex = Math.max(0, Math.min(index, count - 1));
+    const targetMax = maxScrollOffset();
+    let top = clampedIndex * itemSpan + scrollMargin;
+    if (options?.align === "center") {
+      top = top - viewportHeight() / 2 + itemSpan / 2;
+    } else if (options?.align === "end") {
+      top = count > 1 ? targetMax * (clampedIndex / (count - 1)) : targetMax;
+    }
+    top = Math.max(0, Math.min(top, targetMax));
+    if (mode.kind === "window") {
+      window.scrollTo({ top, behavior: options?.behavior });
+    } else {
+      mode.element.scrollTo({ top, behavior: options?.behavior });
+    }
+    rerender((value) => value + 1);
+  };
+
+  return {
+    getVirtualItems: () => virtualItems,
+    getTotalSize: () => totalSize,
+    scrollToIndex,
+    measure: () => undefined,
+    measureElement: (_element?: HTMLElement | null) => undefined,
+  };
+}
+
 // The chat thread renders inside `<main id="main-content">` on the real issue
 // page (overflow-auto on desktop), but lives at document scope on mobile (main
 // is overflow-visible) and in the auth-free perf fixture. Walk the DOM to find
@@ -2274,31 +2360,14 @@ const VirtualizedIssueChatThreadListInner = forwardRef<
     ? VIRTUALIZED_THREAD_GAP_EMBEDDED_PX
     : VIRTUALIZED_THREAD_GAP_FULL_PX;
 
-  // Window-mode passes window-specific observers/scroll-fn through the same
-  // useVirtualizer hook (the `Window` vs `Element` type mismatch in the
-  // observer signatures is invisible at runtime — both reach into
-  // instance.scrollElement/targetWindow uniformly — so we widen via `any`
-  // rather than splitting into two component variants).
-  const virtualizerOptions: Record<string, unknown> = mode.kind === "window"
-    ? {
-        getScrollElement: () => (typeof document !== "undefined" ? window : null),
-        observeElementRect: observeWindowRect,
-        observeElementOffset: observeWindowOffset,
-        scrollToFn: windowScroll,
-        initialOffset: () => typeof window !== "undefined" ? window.scrollY : 0,
-      }
-    : {
-        getScrollElement: () => mode.element,
-      };
-
-  const virtualizer = useVirtualizer({
-    ...(virtualizerOptions as Parameters<typeof useVirtualizer>[0]),
+  const virtualizer = useIssueThreadVirtualizer({
     count: messages.length,
     estimateSize: () => VIRTUALIZED_THREAD_ROW_ESTIMATE_PX,
     overscan: VIRTUALIZED_THREAD_OVERSCAN,
     scrollMargin,
     gap,
     getItemKey: (index) => messages[index]?.id ?? index,
+    mode,
   });
 
   useImperativeHandle(ref, () => ({
