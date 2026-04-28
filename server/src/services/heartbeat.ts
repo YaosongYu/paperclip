@@ -113,6 +113,10 @@ import {
   readContinuationAttempt,
 } from "./recovery/index.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
+import {
+  isLiveExplicitApprovalWaitingPath,
+  isLiveExplicitInteractionWaitingPath,
+} from "./recovery/explicit-waiting-paths.js";
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
@@ -2774,42 +2778,61 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
-  async function hasExplicitIssueWait(companyId: string, issueId: string) {
+  async function hasExplicitIssueWait(issue: {
+    companyId: string;
+    id: string;
+    assigneeUserId?: string | null;
+    executionState?: Record<string, unknown> | null;
+  }) {
     await issueThreadInteractionService(db).expireInvalidPendingRequestConfirmationsForIssue(
-      { id: issueId, companyId },
+      { id: issue.id, companyId: issue.companyId },
       { agentId: null, userId: null },
     );
 
-    const [interaction, approval] = await Promise.all([
+    const [interactionRows, approvalRows] = await Promise.all([
       db
-        .select({ id: issueThreadInteractions.id })
+        .select({
+          issueId: issueThreadInteractions.issueId,
+          companyId: issueThreadInteractions.companyId,
+          status: issueThreadInteractions.status,
+          createdByUserId: issueThreadInteractions.createdByUserId,
+          createdAt: issueThreadInteractions.createdAt,
+        })
         .from(issueThreadInteractions)
         .where(
           and(
-            eq(issueThreadInteractions.companyId, companyId),
-            eq(issueThreadInteractions.issueId, issueId),
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
             eq(issueThreadInteractions.status, "pending"),
             inArray(issueThreadInteractions.kind, EXPLICIT_WAITING_INTERACTION_KINDS),
           ),
         )
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
+        .limit(5),
       db
-        .select({ id: issueApprovals.issueId })
+        .select({
+          issueId: issueApprovals.issueId,
+          companyId: issueApprovals.companyId,
+          status: approvals.status,
+          requestedByUserId: approvals.requestedByUserId,
+          linkedByUserId: issueApprovals.linkedByUserId,
+          createdAt: approvals.createdAt,
+          updatedAt: approvals.updatedAt,
+          linkedAt: issueApprovals.createdAt,
+        })
         .from(issueApprovals)
         .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
         .where(
           and(
-            eq(issueApprovals.companyId, companyId),
-            eq(issueApprovals.issueId, issueId),
+            eq(issueApprovals.companyId, issue.companyId),
+            eq(issueApprovals.issueId, issue.id),
             inArray(approvals.status, ["pending", "revision_requested"]),
           ),
         )
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
+        .limit(5),
     ]);
 
-    return Boolean(interaction || approval);
+    return interactionRows.some((row) => isLiveExplicitInteractionWaitingPath(issue, row)) ||
+      approvalRows.some((row) => isLiveExplicitApprovalWaitingPath(issue, row));
   }
 
   async function handleRunLivenessContinuation(run: typeof heartbeatRuns.$inferSelect) {
@@ -2831,6 +2854,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           title: issues.title,
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
           executionState: issues.executionState,
           projectId: issues.projectId,
         })
@@ -2856,7 +2880,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         : null;
     if (issue) {
-      if (await hasExplicitIssueWait(issue.companyId, issue.id)) {
+      if (await hasExplicitIssueWait(issue)) {
         await setRunStatus(run.id, run.status, {
           livenessReason:
             `${run.livenessReason ?? "Run ended without concrete progress"}; continuation suppressed by explicit interaction or approval wait`,

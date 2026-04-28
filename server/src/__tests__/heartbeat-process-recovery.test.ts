@@ -2440,6 +2440,80 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(refreshedRun?.livenessReason).toContain("continuation suppressed by explicit interaction or approval wait");
   });
 
+  it("does not suppress bounded liveness continuation for stale agent-authored confirmations", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "plan_only",
+      livenessReason: "Run produced a plan and needs approval",
+      nextAction: "Continue after recovering from the stale confirmation.",
+    });
+    await db.insert(issueThreadInteractions).values({
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      payload: {
+        version: 1,
+        prompt: "Approve the stale plan?",
+      },
+      createdByAgentId: agentId,
+      sourceRunId: runId,
+      createdAt: new Date("2026-03-19T00:06:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:06:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+    const sourceRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0] ?? null);
+    if (!sourceRun) throw new Error("Expected source run");
+
+    await heartbeat.handleRunLivenessContinuationForTest(sourceRun);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "run_liveness_continuation")));
+    expect(wakeups).toHaveLength(1);
+  });
+
+  it("does not suppress bounded liveness continuation for stale agent-requested approvals", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "plan_only",
+      livenessReason: "Run requested approval before continuing",
+      nextAction: "Continue after recovering from the stale approval.",
+    });
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "request_board_approval",
+      requestedByAgentId: agentId,
+      status: "pending",
+      payload: {},
+      createdAt: new Date("2026-03-19T00:06:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:06:00.000Z"),
+    });
+    await db.insert(issueApprovals).values({
+      companyId,
+      issueId,
+      approvalId,
+      linkedByAgentId: agentId,
+      createdAt: new Date("2026-03-19T00:06:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+    const sourceRun = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then((rows) => rows[0] ?? null);
+    if (!sourceRun) throw new Error("Expected source run");
+
+    await heartbeat.handleRunLivenessContinuationForTest(sourceRun);
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "run_liveness_continuation")));
+    expect(wakeups).toHaveLength(1);
+  });
+
   it("does not re-dispatch assigned work while a live pending confirmation owns the next step", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "todo",

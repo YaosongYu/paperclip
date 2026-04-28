@@ -365,12 +365,23 @@ describe("issue graph liveness classifier", () => {
       {
         name: "pending interaction",
         issue: baseReviewIssue,
-        pendingInteractions: [{ companyId, issueId: reviewIssueId, status: "pending" }],
+        pendingInteractions: [{
+          companyId,
+          issueId: reviewIssueId,
+          status: "pending",
+          createdAt: new Date(),
+        }],
       },
       {
         name: "pending approval",
         issue: baseReviewIssue,
-        pendingApprovals: [{ companyId, issueId: reviewIssueId, status: "pending" }],
+        pendingApprovals: [{
+          companyId,
+          issueId: reviewIssueId,
+          status: "pending",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        }],
       },
       {
         name: "open recovery issue",

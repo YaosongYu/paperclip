@@ -1,4 +1,8 @@
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
+import {
+  isLiveExplicitApprovalWaitingPath,
+  isLiveExplicitInteractionWaitingPath,
+} from "./explicit-waiting-paths.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
 
@@ -52,6 +56,12 @@ export interface IssueLivenessWaitingPathInput {
   companyId: string;
   issueId: string;
   status: string;
+  createdByUserId?: string | null;
+  requestedByUserId?: string | null;
+  linkedByUserId?: string | null;
+  createdAt?: Date | string | null;
+  updatedAt?: Date | string | null;
+  linkedAt?: Date | string | null;
 }
 
 export interface IssueLivenessDependencyPathEntry {
@@ -133,11 +143,16 @@ function hasActiveExecutionPath(
 }
 
 function hasWaitingPath(
-  companyId: string,
-  issueId: string,
+  issue: IssueLivenessIssueInput,
   waitingPaths: IssueLivenessWaitingPathInput[],
+  kind: "interaction" | "approval",
+  now: Date,
 ) {
-  return waitingPaths.some((entry) => entry.companyId === companyId && entry.issueId === issueId);
+  return waitingPaths.some((entry) =>
+    kind === "interaction"
+      ? isLiveExplicitInteractionWaitingPath(issue, entry, now)
+      : isLiveExplicitApprovalWaitingPath(issue, entry, now)
+  );
 }
 
 function readPrincipalAgentId(principal: unknown): string | null {
@@ -308,6 +323,7 @@ function finding(input: {
 }
 
 export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): IssueLivenessFinding[] {
+  const now = new Date();
   const issuesById = new Map(input.issues.map((issue) => [issue.id, issue]));
   const agentsById = new Map(input.agents.map((agent) => [agent.id, agent]));
   const blockersByBlockedIssueId = new Map<string, IssueLivenessRelationInput[]>();
@@ -352,9 +368,9 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
-      hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
-      hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
-      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
+      hasWaitingPath(issue, pendingInteractions, "interaction", now) ||
+      hasWaitingPath(issue, pendingApprovals, "approval", now) ||
+      openRecoveryIssues.some((entry) => entry.companyId === issue.companyId && entry.issueId === issue.id);
   }
 
   function reviewFinding(

@@ -44,6 +44,10 @@ import {
   classifyIssueGraphLiveness,
   type IssueLivenessFinding,
 } from "./issue-graph-liveness.js";
+import {
+  isLiveExplicitApprovalWaitingPath,
+  isLiveExplicitInteractionWaitingPath,
+} from "./explicit-waiting-paths.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import {
   RUN_LIVENESS_CONTINUATION_REASON,
@@ -395,7 +399,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
-  async function hasExplicitWaitingPath(issue: Pick<typeof issues.$inferSelect, "companyId" | "id" | "status" | "executionState">) {
+  async function hasExplicitWaitingPath(
+    issue: Pick<
+      typeof issues.$inferSelect,
+      "companyId" | "id" | "status" | "assigneeUserId" | "executionState"
+    >,
+  ) {
     if (issue.status === "done" || issue.status === "cancelled") return true;
     if (issue.status === "blocked" || issue.status === "in_review") return true;
     if (issue.executionState) return true;
@@ -404,9 +413,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       { agentId: null, userId: null },
     );
 
-    const [interaction, approval, recoveryIssue] = await Promise.all([
+    const [interactionRows, approvalRows, recoveryIssue] = await Promise.all([
       db
-        .select({ id: issueThreadInteractions.id })
+        .select({
+          issueId: issueThreadInteractions.issueId,
+          companyId: issueThreadInteractions.companyId,
+          status: issueThreadInteractions.status,
+          createdByUserId: issueThreadInteractions.createdByUserId,
+          createdAt: issueThreadInteractions.createdAt,
+        })
         .from(issueThreadInteractions)
         .where(
           and(
@@ -416,10 +431,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             inArray(issueThreadInteractions.kind, EXPLICIT_WAITING_INTERACTION_KINDS),
           ),
         )
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
+        .limit(5),
       db
-        .select({ id: issueApprovals.issueId })
+        .select({
+          issueId: issueApprovals.issueId,
+          companyId: issueApprovals.companyId,
+          status: approvals.status,
+          requestedByUserId: approvals.requestedByUserId,
+          linkedByUserId: issueApprovals.linkedByUserId,
+          createdAt: approvals.createdAt,
+          updatedAt: approvals.updatedAt,
+          linkedAt: issueApprovals.createdAt,
+        })
         .from(issueApprovals)
         .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
         .where(
@@ -429,8 +452,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             inArray(approvals.status, ["pending", "revision_requested"]),
           ),
         )
-        .limit(1)
-        .then((rows) => rows[0] ?? null),
+        .limit(5),
       db
         .select({ id: issues.id })
         .from(issues)
@@ -446,7 +468,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .then((rows) => rows[0] ?? null),
     ]);
 
-    return Boolean(interaction || approval || recoveryIssue);
+    return Boolean(
+      interactionRows.some((row) => isLiveExplicitInteractionWaitingPath(issue, row)) ||
+      approvalRows.some((row) => isLiveExplicitApprovalWaitingPath(issue, row)) ||
+      recoveryIssue,
+    );
   }
 
   async function classifyPostRunIssueDisposition(
@@ -2085,6 +2111,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           companyId: issueThreadInteractions.companyId,
           issueId: issueThreadInteractions.issueId,
           status: issueThreadInteractions.status,
+          createdByUserId: issueThreadInteractions.createdByUserId,
+          createdAt: issueThreadInteractions.createdAt,
         })
         .from(issueThreadInteractions)
         .where(
@@ -2098,6 +2126,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           companyId: issueApprovals.companyId,
           issueId: issueApprovals.issueId,
           status: approvals.status,
+          requestedByUserId: approvals.requestedByUserId,
+          linkedByUserId: issueApprovals.linkedByUserId,
+          createdAt: approvals.createdAt,
+          updatedAt: approvals.updatedAt,
+          linkedAt: issueApprovals.createdAt,
         })
         .from(issueApprovals)
         .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))

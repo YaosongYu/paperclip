@@ -55,6 +55,10 @@ import {
   issueTreeControlService,
   type ActiveIssueTreePauseHoldGate,
 } from "./issue-tree-control.js";
+import {
+  isLiveExplicitApprovalWaitingPath,
+  isLiveExplicitInteractionWaitingPath,
+} from "./recovery/explicit-waiting-paths.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -713,6 +717,7 @@ type IssueBlockerAttentionNode = {
   title: string;
   status: string;
   executionRunId?: string | null;
+  executionState?: Record<string, unknown> | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
 };
@@ -1170,6 +1175,7 @@ async function listIssueBlockerAttentionMap(
           title: issues.title,
           status: issues.status,
           executionRunId: issues.executionRunId,
+          executionState: issues.executionState,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
         })
@@ -1195,6 +1201,7 @@ async function listIssueBlockerAttentionMap(
           title: issues.title,
           status: issues.status,
           executionRunId: issues.executionRunId,
+          executionState: issues.executionState,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
         })
@@ -1310,8 +1317,20 @@ async function listIssueBlockerAttentionMap(
   }
   if (nonTerminalNodeIds.length > 0) {
     for (const chunk of chunkList(nonTerminalNodeIds, ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
-      const interactionRows: Array<{ issueId: string }> = await dbOrTx
-        .select({ issueId: issueThreadInteractions.issueId })
+      const interactionRows: Array<{
+        issueId: string;
+        companyId: string;
+        status: string;
+        createdByUserId: string | null;
+        createdAt: Date;
+      }> = await dbOrTx
+        .select({
+          issueId: issueThreadInteractions.issueId,
+          companyId: issueThreadInteractions.companyId,
+          status: issueThreadInteractions.status,
+          createdByUserId: issueThreadInteractions.createdByUserId,
+          createdAt: issueThreadInteractions.createdAt,
+        })
         .from(issueThreadInteractions)
         .where(
           and(
@@ -1323,13 +1342,32 @@ async function listIssueBlockerAttentionMap(
         );
       for (const row of interactionRows) {
         const node = nodesById.get(row.issueId);
+        if (!node || !isLiveExplicitInteractionWaitingPath(node, row)) continue;
         setExplicitWaitingPath(row.issueId, explicitWaitingPathForOwner(ownerForExplicitWait({
           assigneeUserId: node?.assigneeUserId ?? null,
         })));
       }
 
-      const approvalRows: Array<{ issueId: string }> = await dbOrTx
-        .select({ issueId: issueApprovals.issueId })
+      const approvalRows: Array<{
+        issueId: string;
+        companyId: string;
+        status: string;
+        requestedByUserId: string | null;
+        linkedByUserId: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        linkedAt: Date;
+      }> = await dbOrTx
+        .select({
+          issueId: issueApprovals.issueId,
+          companyId: issueApprovals.companyId,
+          status: approvals.status,
+          requestedByUserId: approvals.requestedByUserId,
+          linkedByUserId: issueApprovals.linkedByUserId,
+          createdAt: approvals.createdAt,
+          updatedAt: approvals.updatedAt,
+          linkedAt: issueApprovals.createdAt,
+        })
         .from(issueApprovals)
         .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
         .where(
@@ -1341,6 +1379,7 @@ async function listIssueBlockerAttentionMap(
         );
       for (const row of approvalRows) {
         const node = nodesById.get(row.issueId);
+        if (!node || !isLiveExplicitApprovalWaitingPath(node, row)) continue;
         setExplicitWaitingPath(row.issueId, explicitWaitingPathForOwner(ownerForExplicitWait({
           assigneeUserId: node?.assigneeUserId ?? null,
         })));

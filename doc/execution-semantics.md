@@ -165,12 +165,14 @@ The valid action-path primitives are:
 - a scheduled retry or deferred issue-execution wake that is tied to the issue
 - an active subtree pause hold that intentionally suppresses execution for the issue
 - a typed execution-policy participant, such as `executionState.currentParticipant`
-- a pending issue-thread interaction or linked approval that is waiting for a specific responder
+- a pending issue-thread interaction or linked approval that is waiting for a specific responder and is fresh or tied to a resolvable human owner
 - a human owner via `assigneeUserId`
 - a first-class blocker chain whose unresolved leaf issues are themselves healthy
 - an open explicit recovery issue that names the owner and action needed to restore liveness
 
 Run progress and issue liveness are separate questions. A finished heartbeat can prove that the agent did useful work during that run, but the finished run is not itself a live path for a non-terminal agent-owned issue. After a heartbeat exits, a non-terminal issue must still have a terminal state, explicit waiting path, explicit live path, or recovery/review path.
+
+Pending issue-thread interactions and linked pending approvals are status-independent waiting primitives: they can keep a `todo` or `in_progress` issue healthy if they clearly name the responder and continuation policy, and the wait is either fresh or tied to a resolvable human owner. Stale agent-authored or ownerless waits are not durable liveness coverage; recovery should treat them as stalled or recovery-needed instead of suppressing watchdog surfaces indefinitely. Agents should still move the source issue to `in_review` when they create a plan confirmation, question, or other board/user decision card, because `in_review` is the visible posture that tells operators execution is intentionally paused rather than abandoned.
 
 ### Agent-assigned `todo`
 
@@ -196,9 +198,12 @@ A healthy active-work state means at least one of these is true:
 - there is already a queued continuation wake
 - there is a scheduled retry or deferred issue-execution wake for the issue
 - the issue is covered by an active pause hold
+- the issue is waiting on a live pending interaction or linked approval that clearly owns the next action
 - there is an open explicit recovery issue for the lost execution path
 
-An agent-owned `in_progress` issue is stalled when it has no active run, no queued continuation, and no explicit recovery surface. A still-running but silent process is not automatically stalled; it is handled by the active-run watchdog contract.
+An agent-owned `in_progress` issue is stalled when it has no active run, no queued continuation, no explicit waiting path, and no explicit recovery surface. A still-running but silent process is not automatically stalled; it is handled by the active-run watchdog contract.
+
+For new handoffs, do not rely on `in_progress` plus a pending interaction as the normal user-facing state. It is accepted as a liveness backstop for compatibility and crash recovery, but the preferred contract is to set the issue to `in_review` before the heartbeat exits.
 
 For terminal successful runs, Paperclip evaluates the post-run issue disposition instead of treating success as liveness. The disposition is:
 
@@ -216,7 +221,7 @@ This is review/approval state: execution is paused because the next move belongs
 A healthy `in_review` issue has at least one valid action path:
 
 - a typed execution-policy participant who can approve or request changes
-- a pending issue-thread interaction or linked approval waiting for a named responder
+- a live pending issue-thread interaction or linked approval waiting for a named responder
 - a human owner via `assigneeUserId`
 - an active run or queued wake that is expected to process the review state
 - an open explicit recovery issue for an ambiguous review handoff
@@ -233,11 +238,11 @@ A healthy `blocked` issue has an explicit waiting path:
 
 - first-class blockers exist, and each unresolved leaf has a valid action path under this contract
 - the issue is blocked on an explicit recovery issue that itself has a live or waiting path
-- the issue is waiting on a pending interaction, linked approval, human owner, or clearly named external owner/action
+- the issue is waiting on a live pending interaction, linked approval, human owner, or clearly named external owner/action
 
 A blocker chain is covered only when its unresolved leaf is live or explicitly waiting. An intermediate `blocked` issue does not make the chain healthy by itself.
 
-A `blocked` issue is stalled when the unresolved blocker leaf has no active run, queued wake, typed participant, pending interaction or approval, user owner, external owner/action, or recovery issue. In that case the parent should show the first stalled leaf instead of presenting the dependency as calmly covered.
+A `blocked` issue is stalled when the unresolved blocker leaf has no active run, queued wake, typed participant, live pending interaction or approval, user owner, external owner/action, or recovery issue. In that case the parent should show the first stalled leaf instead of presenting the dependency as calmly covered.
 
 ## 8. Crash and Restart Recovery
 
@@ -307,6 +312,7 @@ Bounded continuation is not queued when:
 - the issue is terminal, `blocked`, `in_review`, or otherwise not in `todo`/`in_progress`
 - the issue is no longer assigned to the source run agent
 - execution-policy state owns the next decision
+- a live pending issue-thread interaction or linked approval owns the next decision
 - the assignee is not invokable
 - a budget hard stop applies
 - an equivalent continuation wake already exists

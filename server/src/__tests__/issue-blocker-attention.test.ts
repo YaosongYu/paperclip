@@ -121,31 +121,53 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     return runId;
   }
 
-  async function pendingInteraction(input: { companyId: string; issueId: string; kind?: "request_confirmation" | "ask_user_questions" }) {
+  async function pendingInteraction(input: {
+    companyId: string;
+    issueId: string;
+    kind?: "request_confirmation" | "ask_user_questions";
+    agentId?: string | null;
+    userId?: string | null;
+    createdAt?: Date;
+  }) {
     await db.insert(issueThreadInteractions).values({
       companyId: input.companyId,
       issueId: input.issueId,
       kind: input.kind ?? "request_confirmation",
       status: "pending",
+      createdByAgentId: input.agentId ?? null,
+      createdByUserId: input.userId ?? null,
+      createdAt: input.createdAt,
+      updatedAt: input.createdAt,
       payload: {},
     });
   }
 
-  async function linkedPendingApproval(input: { companyId: string; issueId: string; agentId: string }) {
+  async function linkedPendingApproval(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    userId?: string | null;
+    createdAt?: Date;
+  }) {
     const approvalId = randomUUID();
     await db.insert(approvals).values({
       id: approvalId,
       companyId: input.companyId,
       type: "request_board_approval",
-      requestedByAgentId: input.agentId,
+      requestedByAgentId: input.userId ? null : input.agentId,
+      requestedByUserId: input.userId ?? null,
       status: "pending",
       payload: {},
+      createdAt: input.createdAt,
+      updatedAt: input.createdAt,
     });
     await db.insert(issueApprovals).values({
       companyId: input.companyId,
       issueId: input.issueId,
       approvalId,
       linkedByAgentId: input.agentId,
+      linkedByUserId: input.userId ?? null,
+      createdAt: input.createdAt,
     });
   }
 
@@ -503,6 +525,75 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       nextActionHint: "needs_human_review",
     });
     expect(parent?.blockerAttention?.nextActionOwner).toMatchObject({ type: "user" });
+  });
+
+  it("does not let stale agent-authored confirmations suppress recovery attention", async () => {
+    const { companyId, agentId } = await createCompany("PRS");
+    const parentId = await insertIssue({ companyId, identifier: "PRS-1", title: "Parent", status: "blocked" });
+    const leafId = await insertIssue({
+      companyId,
+      identifier: "PRS-2",
+      title: "Stale confirmation leaf",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: leafId, blockedIssueId: parentId });
+    await recordedRun({ companyId, agentId, issueId: leafId, livenessState: "advanced" });
+    await pendingInteraction({
+      companyId,
+      issueId: leafId,
+      kind: "request_confirmation",
+      agentId,
+      createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+    });
+
+    const issuesList = await svc.list(companyId, { status: "blocked,in_progress" });
+    const parent = issuesList.find((issue) => issue.id === parentId);
+    const leaf = issuesList.find((issue) => issue.id === leafId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "recovery_needed",
+      reason: "productive_run_stopped",
+      sampleBlockerIdentifier: "PRS-2",
+    });
+    expect(leaf?.blockerAttention).toMatchObject({
+      state: "recovery_needed",
+      reason: "productive_run_stopped",
+    });
+  });
+
+  it("does not let stale agent-requested approvals suppress recovery attention", async () => {
+    const { companyId, agentId } = await createCompany("PRZ");
+    const parentId = await insertIssue({ companyId, identifier: "PRZ-1", title: "Parent", status: "blocked" });
+    const leafId = await insertIssue({
+      companyId,
+      identifier: "PRZ-2",
+      title: "Stale approval leaf",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    await block({ companyId, blockerIssueId: leafId, blockedIssueId: parentId });
+    await recordedRun({ companyId, agentId, issueId: leafId, livenessState: "advanced" });
+    await linkedPendingApproval({
+      companyId,
+      issueId: leafId,
+      agentId,
+      createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
+    });
+
+    const issuesList = await svc.list(companyId, { status: "blocked,in_progress" });
+    const parent = issuesList.find((issue) => issue.id === parentId);
+    const leaf = issuesList.find((issue) => issue.id === leafId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "recovery_needed",
+      reason: "productive_run_stopped",
+      sampleBlockerIdentifier: "PRZ-2",
+    });
+    expect(leaf?.blockerAttention).toMatchObject({
+      state: "recovery_needed",
+      reason: "productive_run_stopped",
+    });
   });
 
   it("escalates to continuation_exhausted when the latest run already used its bounded continuations", async () => {
