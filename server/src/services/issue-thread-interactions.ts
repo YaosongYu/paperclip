@@ -68,6 +68,45 @@ type IssueResolutionContext = {
   assigneeUserId: string | null;
 };
 
+function isAgentAuthoredWaitingInteraction(input: CreateIssueThreadInteraction, actor: InteractionActor) {
+  return Boolean(actor.agentId) && (input.kind === "request_confirmation" || input.kind === "ask_user_questions");
+}
+
+async function moveIssueToReviewForAgentWaitingInteraction(
+  db: Db,
+  issue: { id: string; companyId: string },
+  input: CreateIssueThreadInteraction,
+  actor: InteractionActor,
+) {
+  if (!actor.agentId || !isAgentAuthoredWaitingInteraction(input, actor)) return null;
+
+  const issueContext = await db
+    .select({
+      id: issues.id,
+      companyId: issues.companyId,
+      status: issues.status,
+      assigneeAgentId: issues.assigneeAgentId,
+      assigneeUserId: issues.assigneeUserId,
+    })
+    .from(issues)
+    .where(eq(issues.id, issue.id))
+    .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
+
+  if (!issueContext || issueContext.companyId !== issue.companyId) {
+    throw notFound("Issue not found");
+  }
+  if (issueContext.status !== "todo" && issueContext.status !== "in_progress") return null;
+  if (issueContext.assigneeUserId) return null;
+
+  return issueService(db).update(issue.id, {
+    status: "in_review",
+    assigneeAgentId: issueContext.assigneeAgentId ?? actor.agentId,
+    assigneeUserId: null,
+    actorAgentId: actor.agentId ?? null,
+    actorUserId: actor.userId ?? null,
+  });
+}
+
 function isIssueThreadInteractionIdempotencyConflict(error: unknown): boolean {
   if (typeof error !== "object" || error === null) return false;
   const err = error as { code?: string; constraint?: string; constraint_name?: string };
@@ -640,6 +679,7 @@ export function issueThreadInteractionService(db: Db) {
               idempotencyKey: data.idempotencyKey,
             });
           }
+          await moveIssueToReviewForAgentWaitingInteraction(db, issue, data, actor);
           return hydrateInteraction(existing);
         }
       }
@@ -717,6 +757,7 @@ export function issueThreadInteractionService(db: Db) {
         return hydrateInteraction(existing);
       }
 
+      await moveIssueToReviewForAgentWaitingInteraction(db, issue, data, actor);
       await touchIssue(db, issue.id);
       return hydrateInteraction(created);
     },
