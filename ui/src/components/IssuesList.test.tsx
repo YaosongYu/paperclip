@@ -987,7 +987,9 @@ describe("IssuesList", () => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
     });
     await flush();
-    expect(onLoadMoreIssues).not.toHaveBeenCalled();
+    expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
+    await flush();
+    expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
 
     act(() => {
       setDocumentScrollMetrics({ innerHeight: 600, scrollY: 1500, scrollHeight: 2000 });
@@ -995,7 +997,7 @@ describe("IssuesList", () => {
     });
 
     await waitForAssertion(() => {
-      expect(onLoadMoreIssues).toHaveBeenCalledTimes(1);
+      expect(onLoadMoreIssues).toHaveBeenCalledTimes(2);
     });
 
     act(() => {

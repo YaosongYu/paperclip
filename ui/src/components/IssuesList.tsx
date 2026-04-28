@@ -533,6 +533,7 @@ export function IssuesList({
   const [renderedIssueRowLimit, setRenderedIssueRowLimit] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(() => loadIssueColumns(scopedKey));
   const renderedIssueIdsRef = useRef("");
+  const initialServerFillRequestedRef = useRef(false);
   const deferredIssueSearch = useDeferredValue(issueSearch);
   const normalizedIssueSearch = deferredIssueSearch.trim().toLowerCase();
 
@@ -1033,31 +1034,40 @@ export function IssuesList({
     const scrollContainer = findIssuesScrollContainer(rootRef.current);
     const scrollTarget: Window | HTMLElement = scrollContainer ?? window;
 
-    const checkScrollPosition = () => {
+    const checkScrollPosition = (trigger: "initial" | "scroll" | "resize" = "scroll") => {
       if (animationFrameId !== null) return;
       animationFrameId = window.requestAnimationFrame(() => {
         animationFrameId = null;
         const scrollHeight = scrollContainer?.scrollHeight ?? document.documentElement.scrollHeight;
         if (scrollHeight === 0) return;
+        const viewportHeight = scrollContainer?.clientHeight ?? window.innerHeight;
         const scrollBottom = scrollContainer
           ? scrollContainer.scrollTop + scrollContainer.clientHeight
           : window.scrollY + window.innerHeight;
+        const hasScrollableOverflow = scrollHeight > viewportHeight + 1;
         const threshold = scrollHeight - ISSUE_SCROLL_LOAD_THRESHOLD_PX;
         if (scrollBottom >= threshold) {
+          if (trigger === "initial" && !hasMoreRenderedRows && hasMoreIssues && !hasScrollableOverflow) {
+            if (initialServerFillRequestedRef.current) return;
+            initialServerFillRequestedRef.current = true;
+          }
           loadMoreIssueRows();
         }
       });
     };
 
-    scrollTarget.addEventListener("scroll", checkScrollPosition, { passive: true });
-    window.addEventListener("resize", checkScrollPosition);
+    const handleScroll = () => checkScrollPosition("scroll");
+    const handleResize = () => checkScrollPosition("resize");
+    scrollTarget.addEventListener("scroll", handleScroll, { passive: true });
+    window.addEventListener("resize", handleResize);
+    checkScrollPosition("initial");
 
     return () => {
-      scrollTarget.removeEventListener("scroll", checkScrollPosition);
-      window.removeEventListener("resize", checkScrollPosition);
+      scrollTarget.removeEventListener("scroll", handleScroll);
+      window.removeEventListener("resize", handleResize);
       if (animationFrameId !== null) window.cancelAnimationFrame(animationFrameId);
     };
-  }, [canLoadMoreIssues, loadMoreIssueRows]);
+  }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
 
   const newIssueDefaults = useCallback((groupKey?: string) => {
     const defaults: Record<string, unknown> = { ...(baseCreateIssueDefaults ?? {}) };
