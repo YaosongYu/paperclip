@@ -10,6 +10,9 @@ const mockIssueService = vi.hoisted(() => ({
   createAttachment: vi.fn(),
   getAttachmentById: vi.fn(),
 }));
+const mockCompanyService = vi.hoisted(() => ({
+  getById: vi.fn(),
+}));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
@@ -39,6 +42,7 @@ function registerRouteMocks() {
     agentService: () => ({
       getById: vi.fn(),
     }),
+    companyService: () => mockCompanyService,
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
@@ -180,6 +184,10 @@ describe("issue attachment routes", () => {
     registerRouteMocks();
     vi.clearAllMocks();
     mockLogActivity.mockResolvedValue(undefined);
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      attachmentMaxBytes: 1024 * 1024 * 1024,
+    });
   });
 
   it("accepts zip uploads for issue attachments", async () => {
@@ -213,6 +221,49 @@ describe("issue attachment routes", () => {
       }),
     );
     expect(res.body.contentType).toBe("application/zip");
+  });
+
+  it("allows issue attachments larger than the legacy 10 MiB process default when company limit allows it", async () => {
+    const storage = createStorageService();
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+    mockIssueService.createAttachment.mockResolvedValue(makeAttachment("application/octet-stream", "large.bin"));
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.alloc(10 * 1024 * 1024 + 1), {
+        filename: "large.bin",
+        contentType: "application/octet-stream",
+      });
+
+    expect(res.status).toBe(201);
+    expect(storage.__calls.putFile?.body.length).toBe(10 * 1024 * 1024 + 1);
+  });
+
+  it("enforces the configured per-company issue attachment limit", async () => {
+    const storage = createStorageService();
+    mockCompanyService.getById.mockResolvedValue({
+      id: "company-1",
+      attachmentMaxBytes: 4,
+    });
+    mockIssueService.getById.mockResolvedValue({
+      id: "11111111-1111-4111-8111-111111111111",
+      companyId: "company-1",
+      identifier: "PAP-1",
+    });
+
+    const app = await createApp(storage);
+    const res = await request(app)
+      .post("/api/companies/company-1/issues/11111111-1111-4111-8111-111111111111/attachments")
+      .attach("file", Buffer.from("large"), { filename: "large.txt", contentType: "text/plain" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toBe("Attachment exceeds 4 bytes");
+    expect(mockIssueService.createAttachment).not.toHaveBeenCalled();
   });
 
   it("serves html attachments as downloads with nosniff", async () => {

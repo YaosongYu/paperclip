@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "attachment_max_bytes" integer DEFAULT 1073741824 NOT NULL;

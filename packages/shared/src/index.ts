@@ -1,6 +1,8 @@
 export { agentAdapterTypeSchema, optionalAgentAdapterTypeSchema } from "./adapter-type.js";
 export {
   COMPANY_STATUSES,
+  DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
+  MAX_COMPANY_ATTACHMENT_MAX_BYTES,
   DEPLOYMENT_MODES,
   DEPLOYMENT_EXPOSURES,
   BIND_MODES,

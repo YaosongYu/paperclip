@@ -39,6 +39,7 @@ import * as serviceIndex from "../services/index.js";
 import {
   accessService,
   agentService,
+  companyService,
   executionWorkspaceService,
   goalService,
   heartbeatService,
@@ -65,7 +66,7 @@ import {
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
   isInlineAttachmentContentType,
-  MAX_ATTACHMENT_BYTES,
+  normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
@@ -404,6 +405,7 @@ export function issueRoutes(
     pluginWorkerManager: opts.pluginWorkerManager,
   });
   const feedback = feedbackService(db);
+  const companiesSvc = companyService(db);
   const instanceSettings = instanceSettingsService(db);
   const agentsSvc = agentService(db);
   const projectsSvc = projectService(db);
@@ -427,11 +429,6 @@ export function issueRoutes(
   };
   const feedbackExportService = opts?.feedbackExportService;
   const environmentsSvc = environmentService(db);
-  const upload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1 },
-  });
-
   function withContentPath<T extends { id: string }>(attachment: T) {
     return {
       ...attachment,
@@ -493,7 +490,11 @@ export function issueRoutes(
     return parsed;
   }
 
-  async function runSingleFileUpload(req: Request, res: Response) {
+  async function runSingleFileUpload(req: Request, res: Response, fileSizeLimit: number) {
+    const upload = multer({
+      storage: multer.memoryStorage(),
+      limits: { fileSize: fileSizeLimit, files: 1 },
+    });
     await new Promise<void>((resolve, reject) => {
       upload.single("file")(req, res, (err: unknown) => {
         if (err) reject(err);
@@ -3692,12 +3693,15 @@ export function issueRoutes(
     }
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
 
+    const company = await companiesSvc.getById(companyId);
+    const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(company?.attachmentMaxBytes);
+
     try {
-      await runSingleFileUpload(req, res);
+      await runSingleFileUpload(req, res, attachmentMaxBytes);
     } catch (err) {
       if (err instanceof multer.MulterError) {
         if (err.code === "LIMIT_FILE_SIZE") {
-          res.status(422).json({ error: `Attachment exceeds ${MAX_ATTACHMENT_BYTES} bytes` });
+          res.status(422).json({ error: `Attachment exceeds ${attachmentMaxBytes} bytes` });
           return;
         }
         res.status(400).json({ error: err.message });
