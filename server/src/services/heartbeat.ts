@@ -2770,7 +2770,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function handleRunLivenessContinuation(run: typeof heartbeatRuns.$inferSelect) {
     const livenessState = run.livenessState as RunLivenessState | null;
-    if (livenessState !== "plan_only" && livenessState !== "empty_response") return;
+    if (!livenessState) return;
+    const hasProgressFollowup = livenessState === "advanced" && Boolean(run.nextAction?.trim());
+    if (livenessState !== "plan_only" && livenessState !== "empty_response" && !hasProgressFollowup) return;
 
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId);

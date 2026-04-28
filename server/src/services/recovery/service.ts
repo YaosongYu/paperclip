@@ -72,8 +72,10 @@ type RecoveryWakeup = (
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
+  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "nextAction"
 > | null;
+
+type PostRunIssueDisposition = "terminal" | "explicitly_waiting" | "explicitly_live" | "invalid";
 
 type WatchdogDecisionActor =
   | { type: "board"; userId?: string | null; runId?: string | null }
@@ -188,16 +190,14 @@ function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
   );
 }
 
-function isSuccessfulInProgressContinuationRun(latestRun: LatestIssueRun) {
-  return latestRun?.status === "succeeded";
-}
-
-function isProductiveContinuationRun(latestRun: LatestIssueRun) {
+function isProductiveProgressRun(latestRun: LatestIssueRun) {
   return latestRun?.status === "succeeded" &&
-    (latestRun.livenessState === "advanced" ||
+    (
+      latestRun.livenessState === "advanced" ||
       latestRun.livenessState === "completed" ||
       latestRun.livenessState === "blocked" ||
-      latestRun.livenessState === "needs_followup");
+      latestRun.livenessState === "needs_followup"
+    );
 }
 
 function parseLivenessIncidentKey(incidentKey: string | null | undefined) {
@@ -312,6 +312,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        nextAction: heartbeatRuns.nextAction,
       })
       .from(heartbeatRuns)
       .where(
@@ -369,6 +370,76 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+
+  async function hasExplicitWaitingPath(issue: Pick<typeof issues.$inferSelect, "companyId" | "id" | "status" | "executionState">) {
+    if (issue.status === "done" || issue.status === "cancelled") return true;
+    if (issue.status === "blocked" || issue.status === "in_review") return true;
+    if (issue.executionState) return true;
+
+    const [interaction, approval, recoveryIssue] = await Promise.all([
+      db
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.companyId, issue.companyId),
+            eq(issueThreadInteractions.issueId, issue.id),
+            eq(issueThreadInteractions.status, "pending"),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: issueApprovals.issueId })
+        .from(issueApprovals)
+        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+        .where(
+          and(
+            eq(issueApprovals.companyId, issue.companyId),
+            eq(issueApprovals.issueId, issue.id),
+            inArray(approvals.status, ["pending", "revision_requested"]),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ id: issues.id })
+        .from(issues)
+        .where(
+          and(
+            eq(issues.companyId, issue.companyId),
+            eq(issues.originKind, STRANDED_ISSUE_RECOVERY_ORIGIN_KIND),
+            eq(issues.originId, issue.id),
+            notInArray(issues.status, ["done", "cancelled"]),
+          ),
+        )
+        .limit(1)
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    return Boolean(interaction || approval || recoveryIssue);
+  }
+
+  async function classifyPostRunIssueDisposition(
+    issue: typeof issues.$inferSelect,
+    latestRun: LatestIssueRun,
+  ): Promise<PostRunIssueDisposition> {
+    if (issue.status === "done" || issue.status === "cancelled") return "terminal";
+    if (await hasActiveExecutionPath(issue.companyId, issue.id)) return "explicitly_live";
+    if (await hasExplicitWaitingPath(issue)) return "explicitly_waiting";
+    if (latestRun && EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(
+      latestRun.status as (typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES)[number],
+    )) {
+      return "explicitly_live";
+    }
+    return "invalid";
+  }
+
+  function didAutomaticContinuationFinishWithoutLivePath(latestRun: LatestIssueRun) {
+    if (latestRun?.status !== "succeeded") return false;
+    const latestContext = parseObject(latestRun.contextSnapshot);
+    return readNonEmptyString(latestContext.retryReason) === "issue_continuation_needed";
   }
 
   async function enqueueStrandedIssueRecovery(input: {
@@ -1705,15 +1776,39 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.skipped += 1;
         continue;
       }
-      if (isSuccessfulInProgressContinuationRun(latestRun)) {
-        if (isProductiveContinuationRun(latestRun)) {
-          result.productiveContinuationObserved += 1;
-        } else {
-          result.successfulContinuationObserved += 1;
+
+      const postRunDisposition = await classifyPostRunIssueDisposition(issue, latestRun);
+      if (postRunDisposition !== "invalid") {
+        if (postRunDisposition === "explicitly_live" && latestRun?.status === "succeeded") {
+          if (isProductiveProgressRun(latestRun)) {
+            result.productiveContinuationObserved += 1;
+          } else {
+            result.successfulContinuationObserved += 1;
+          }
         }
         result.skipped += 1;
         continue;
       }
+
+      if (didAutomaticContinuationFinishWithoutLivePath(latestRun)) {
+        const updated = await escalateStrandedAssignedIssue({
+          issue,
+          previousStatus: "in_progress",
+          latestRun,
+          comment:
+            "Paperclip observed a successful automatic continuation for this assigned `in_progress` issue, " +
+            "but the run has finished and no live execution, queued wake, waiting interaction, approval, or recovery owner now holds the next action. " +
+            "Moving it to `blocked` so it is visible for intervention.",
+        });
+        if (updated) {
+          result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+
       if (didAutomaticRecoveryFail(latestRun, "issue_continuation_needed")) {
         const failureSummary = summarizeRunFailureForIssueComment(latestRun);
         const updated = await escalateStrandedAssignedIssue({

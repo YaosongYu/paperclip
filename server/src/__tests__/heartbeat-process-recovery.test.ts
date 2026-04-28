@@ -2110,8 +2110,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeups).toHaveLength(1);
   });
 
-  it("records productive continuation instead of recovery when the latest automatic continuation succeeded", async () => {
-    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+  it("escalates a successful automatic continuation when no live post-run path remains", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
       retryReason: "issue_continuation_needed",
@@ -2121,16 +2121,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
     expect(result.continuationRequeued).toBe(0);
-    expect(result.productiveContinuationObserved).toBe(1);
+    expect(result.productiveContinuationObserved).toBe(0);
     expect(result.successfulContinuationObserved).toBe(0);
-    expect(result.escalated).toBe(0);
-    expect(result.issueIds).toEqual([]);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
-    expect(issue?.status).toBe("in_progress");
+    expect(issue?.status).toBe("blocked");
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(0);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("successful automatic continuation");
 
     const runs = await db
       .select()
@@ -2140,9 +2141,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const wakeups = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, agentId));
     expect(wakeups).toHaveLength(1);
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(1);
   });
 
-  it.fails("does not treat a productive terminal run as healthy when in-progress work has no live path", async () => {
+  it("does not treat a productive terminal run as healthy when in-progress work has no live path", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
