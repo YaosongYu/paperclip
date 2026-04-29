@@ -207,6 +207,8 @@ const MENTION_MENU_HEIGHT = 208;
 const MENTION_MENU_PADDING = 8;
 const MENTION_MENU_ROW_HEIGHT = 34;
 const MENTION_MENU_CHROME_HEIGHT = 8;
+/** Roughly one space-width of breathing room between the caret and the menu. */
+const MENTION_MENU_CARET_GAP = 10;
 
 const CODE_BLOCK_LANGUAGES: Record<string, string> = {
   txt: "Text",
@@ -373,9 +375,9 @@ export function computeMentionMenuPosition(
     top = Math.max(minTop, desiredTop);
   }
 
-  // Place the menu's left edge at the caret X so the menu is to the right of
-  // the cursor, clamped to stay inside the viewport.
-  const desiredLeft = viewport.offsetLeft + anchor.viewportLeft;
+  // Place the menu's left edge a small gap to the right of the caret X so
+  // there's roughly a space-width of breathing room between cursor and menu.
+  const desiredLeft = viewport.offsetLeft + anchor.viewportLeft + MENTION_MENU_CARET_GAP;
   const left = Math.max(minLeft, Math.min(desiredLeft, maxLeft));
 
   return { top, left };

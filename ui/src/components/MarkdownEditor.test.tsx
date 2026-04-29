@@ -478,7 +478,7 @@ describe("MarkdownEditor", () => {
     });
   });
 
-  it("places the menu top on the caret line and left at the caret X", () => {
+  it("places the menu top on the caret line and offsets the left a space-width past the caret", () => {
     expect(
       computeMentionMenuPosition(
         { viewportTop: 100, viewportBottom: 118, viewportLeft: 240 },
@@ -486,7 +486,7 @@ describe("MarkdownEditor", () => {
       ),
     ).toEqual({
       top: 100,
-      left: 240,
+      left: 250,
     });
   });
 
@@ -498,7 +498,7 @@ describe("MarkdownEditor", () => {
       ),
     ).toEqual({
       top: 340,
-      left: 144,
+      left: 154,
     });
   });
 
@@ -522,7 +522,7 @@ describe("MarkdownEditor", () => {
       ),
     ).toEqual({
       top: 372,
-      left: 200,
+      left: 210,
     });
   });
 
@@ -535,7 +535,7 @@ describe("MarkdownEditor", () => {
       ),
     ).toEqual({
       top: 160,
-      left: 120,
+      left: 130,
     });
   });
 
