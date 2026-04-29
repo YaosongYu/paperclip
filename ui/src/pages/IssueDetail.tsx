@@ -1003,47 +1003,6 @@ function IssueDetailActivityTab({
 
   return (
     <>
-      <div className="mb-3">
-        <IssueRunLedger
-          issueId={issueId}
-          companyId={companyId}
-          issueStatus={issueStatus}
-          childIssues={childIssues}
-          agentMap={agentMap}
-          hasLiveRuns={hasLiveRuns}
-          activityEvents={activity ?? []}
-          renderActivityEvent={(evt) => (
-            <div className="space-y-1.5 rounded-lg border border-border/60 px-3 py-2 text-xs text-muted-foreground">
-              <div className="flex items-center gap-1.5">
-                <ActorIdentity evt={evt} agentMap={agentMap} userProfileMap={userProfileMap} />
-                <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, userProfileMap, currentUserId })}</span>
-                <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
-              </div>
-              <IssueReferenceActivitySummary event={evt} />
-            </div>
-          )}
-        />
-      </div>
-      {linkedApprovals && linkedApprovals.length > 0 && (
-        <div className="mb-3 space-y-3">
-          {linkedApprovals.map((approval) => (
-            <ApprovalCard
-              key={approval.id}
-              approval={approval}
-              requesterAgent={approval.requestedByAgentId ? agentMap.get(approval.requestedByAgentId) ?? null : null}
-              onApprove={() => onApprovalAction(approval.id, "approve")}
-              onReject={() => onApprovalAction(approval.id, "reject")}
-              detailLink={`/approvals/${approval.id}`}
-              isPending={pendingApprovalAction?.approvalId === approval.id}
-              pendingAction={
-                pendingApprovalAction?.approvalId === approval.id
-                  ? pendingApprovalAction.action
-                  : null
-              }
-            />
-          ))}
-        </div>
-      )}
       {shouldShowCostSummary && (
         <div className="mb-3 px-3 py-2 rounded-lg border border-border">
           <div className="text-sm font-medium text-muted-foreground mb-1">Cost Summary</div>
@@ -1091,6 +1050,47 @@ function IssueDetailActivityTab({
               ) : null}
             </div>
           )}
+        </div>
+      )}
+      <div className="mb-3">
+        <IssueRunLedger
+          issueId={issueId}
+          companyId={companyId}
+          issueStatus={issueStatus}
+          childIssues={childIssues}
+          agentMap={agentMap}
+          hasLiveRuns={hasLiveRuns}
+          activityEvents={activity ?? []}
+          renderActivityEvent={(evt) => (
+            <div className="space-y-1.5 rounded-lg border border-border/60 px-3 py-2 text-xs text-muted-foreground">
+              <div className="flex items-center gap-1.5">
+                <ActorIdentity evt={evt} agentMap={agentMap} userProfileMap={userProfileMap} />
+                <span>{formatIssueActivityAction(evt.action, evt.details, { agentMap, userProfileMap, currentUserId })}</span>
+                <span className="ml-auto shrink-0">{relativeTime(evt.createdAt)}</span>
+              </div>
+              <IssueReferenceActivitySummary event={evt} />
+            </div>
+          )}
+        />
+      </div>
+      {linkedApprovals && linkedApprovals.length > 0 && (
+        <div className="mb-3 space-y-3">
+          {linkedApprovals.map((approval) => (
+            <ApprovalCard
+              key={approval.id}
+              approval={approval}
+              requesterAgent={approval.requestedByAgentId ? agentMap.get(approval.requestedByAgentId) ?? null : null}
+              onApprove={() => onApprovalAction(approval.id, "approve")}
+              onReject={() => onApprovalAction(approval.id, "reject")}
+              detailLink={`/approvals/${approval.id}`}
+              isPending={pendingApprovalAction?.approvalId === approval.id}
+              pendingAction={
+                pendingApprovalAction?.approvalId === approval.id
+                  ? pendingApprovalAction.action
+                  : null
+              }
+            />
+          ))}
         </div>
       )}
       <IssueContinuationHandoff document={continuationHandoff} focusSignal={handoffFocusSignal} />
