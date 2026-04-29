@@ -1,3 +1,5 @@
+import { pathToFileURL } from "node:url";
+
 type IssueStatus = "backlog" | "todo" | "in_progress" | "in_review" | "done" | "blocked" | "cancelled";
 
 type InvalidDisposition = {
@@ -80,14 +82,14 @@ function dateValue(value: string | Date | null | undefined): Date | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
-function issueScopeTimestamp(issue: IssueSummary): Date | null {
-  return dateValue(issue.updatedAt) ?? dateValue(issue.createdAt);
+export function issueLookbackTimestamp(issue: IssueSummary): Date | null {
+  return dateValue(issue.createdAt);
 }
 
-function filterIssuesByLookback(issues: IssueSummary[], cutoff: Date | null): IssueSummary[] {
+export function filterIssuesByLookback(issues: IssueSummary[], cutoff: Date | null): IssueSummary[] {
   if (!cutoff) return issues;
   return issues.filter((issue) => {
-    const timestamp = issueScopeTimestamp(issue);
+    const timestamp = issueLookbackTimestamp(issue);
     return timestamp ? timestamp >= cutoff : false;
   });
 }
@@ -181,6 +183,19 @@ function proposedAction(reason: string, issue: IssueSummary): string {
     default:
       return "follow-up: inspect and define the lawful next action";
   }
+}
+
+let apiUrl: string;
+let apiKey: string;
+let runId: string | undefined;
+
+function configureApiFromEnvironment() {
+  apiUrl = requireConfig(
+    "PAPERCLIP_API_URL or --api-url",
+    readFlag("--api-url") ?? process.env.PAPERCLIP_API_URL,
+  );
+  apiKey = requireConfig("PAPERCLIP_API_KEY", process.env.PAPERCLIP_API_KEY);
+  runId = process.env.PAPERCLIP_RUN_ID?.trim() || undefined;
 }
 
 async function requestJson<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -284,7 +299,7 @@ function printPreview(
   console.log(`# Legacy execution-disposition reconciliation preview`);
   console.log("");
   console.log(`Company: ${companyId}`);
-  console.log(`Lookback: ${cutoff ? `updated since ${cutoff.toISOString()}` : "all non-terminal issues"}`);
+  console.log(`Lookback: ${cutoff ? `created since ${cutoff.toISOString()}` : "all non-terminal issues"}`);
   console.log(`Non-terminal issues fetched: ${totalFetched}`);
   console.log(`Non-terminal issues scanned: ${totalScanned}`);
   console.log(`Invalid issues found: ${invalidCount}`);
@@ -340,14 +355,8 @@ async function applySafeCorrections(groups: PreviewGroup[]): Promise<number> {
   return applied;
 }
 
-const apiUrl = requireConfig(
-  "PAPERCLIP_API_URL or --api-url",
-  readFlag("--api-url") ?? process.env.PAPERCLIP_API_URL,
-);
-const apiKey = requireConfig("PAPERCLIP_API_KEY", process.env.PAPERCLIP_API_KEY);
-const runId = process.env.PAPERCLIP_RUN_ID?.trim();
-
 async function main() {
+  configureApiFromEnvironment();
   const companyId = requireConfig(
     "PAPERCLIP_COMPANY_ID or --company",
     readFlag("--company") ?? process.env.PAPERCLIP_COMPANY_ID,
@@ -372,8 +381,10 @@ async function main() {
   printPreview(companyId, fetchedIssues.length, issues.length, cutoff, groups, appliedCount);
 }
 
-void main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`Legacy execution-disposition reconciliation preview failed: ${message}`);
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main().catch((error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Legacy execution-disposition reconciliation preview failed: ${message}`);
+    process.exitCode = 1;
+  });
+}
