@@ -131,6 +131,15 @@ export type {
   IssueWorkProductReviewState,
 } from "./work-product.js";
 export type {
+  IssueExecutionDisposition,
+  IssueExecutionDispositionKind,
+  IssueExecutionHumanEscalationOwner,
+  IssueExecutionInvalidReason,
+  IssueExecutionLivePath,
+  IssueExecutionRecoveryKind,
+  IssueExecutionWaitingPath,
+} from "./issue-execution-disposition.js";
+export type {
   Issue,
   IssueAssigneeAdapterOverrides,
   IssueBlockerAttention,
