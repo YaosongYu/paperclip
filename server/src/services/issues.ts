@@ -1207,6 +1207,9 @@ async function listIssueBlockerAttentionMap(
       for (const row of approvalRows) explicitWaitingIssueIds.add(row.issueId);
     }
 
+    // Recovery rows are intentionally company-wide: a liveness escalation for
+    // the same leaf blocker represents an active waiting path even when that
+    // blocker is reached through another blocked graph.
     const recoveryRows: Array<{ id: string; originId: string | null }> = await dbOrTx
       .select({ id: issues.id, originId: issues.originId })
       .from(issues)
