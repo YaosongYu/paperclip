@@ -57,4 +57,10 @@ describe("activity formatting", () => {
     expect(formatActivityVerb("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers on");
     expect(formatIssueActivityAction("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers");
   });
+
+  it("formats monitor activity with direct verbs", () => {
+    expect(formatActivityVerb("issue.monitor_scheduled")).toBe("scheduled monitor on");
+    expect(formatIssueActivityAction("issue.monitor_triggered")).toBe("triggered a monitor");
+    expect(formatIssueActivityAction("issue.monitor_cleared")).toBe("cleared a monitor");
+  });
 });

@@ -118,6 +118,14 @@ function issuesWorkspaceFilterHref(workspaceId: string) {
   return `/issues?${params.toString()}`;
 }
 
+function toDateTimeLocalValue(value: string | null | undefined) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const offsetMs = date.getTimezoneOffset() * 60_000;
+  return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
 interface IssuePropertiesProps {
   issue: Issue;
   childIssues?: Issue[];
@@ -223,6 +231,8 @@ export function IssueProperties({
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
   const [newLabelColor, setNewLabelColor] = useState("#6366f1");
+  const [monitorAtInput, setMonitorAtInput] = useState(() => toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
+  const [monitorNotesInput, setMonitorNotesInput] = useState(issue.executionPolicy?.monitor?.notes ?? "");
 
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
@@ -459,6 +469,58 @@ export function IssueProperties({
     }
     return `${stageLabel} pending${participantLabel ? ` with ${participantLabel}` : ""}`;
   })();
+  useEffect(() => {
+    setMonitorAtInput(toDateTimeLocalValue(issue.executionPolicy?.monitor?.nextCheckAt));
+    setMonitorNotesInput(issue.executionPolicy?.monitor?.notes ?? "");
+  }, [issue.executionPolicy?.monitor?.nextCheckAt, issue.executionPolicy?.monitor?.notes]);
+
+  const updateMonitor = (nextMonitor: Issue["executionPolicy"] extends infer T
+    ? T extends { monitor?: infer M | null } | null | undefined
+      ? M | null
+      : never
+    : never) => {
+    const basePolicy = buildExecutionPolicy({
+      existingPolicy: issue.executionPolicy ?? null,
+      reviewerValues,
+      approverValues,
+    });
+    if (!basePolicy && !nextMonitor) {
+      onUpdate({ executionPolicy: null });
+      return;
+    }
+    onUpdate({
+      executionPolicy: {
+        mode: basePolicy?.mode ?? issue.executionPolicy?.mode ?? "normal",
+        commentRequired: true,
+        stages: basePolicy?.stages ?? [],
+        ...(nextMonitor ? { monitor: nextMonitor } : {}),
+      },
+    });
+  };
+  const saveMonitor = () => {
+    if (!monitorAtInput) return;
+    const nextCheckAt = new Date(monitorAtInput);
+    if (Number.isNaN(nextCheckAt.getTime())) return;
+    updateMonitor({
+      nextCheckAt: nextCheckAt.toISOString(),
+      notes: monitorNotesInput.trim() || null,
+      scheduledBy: issue.executionPolicy?.monitor?.scheduledBy ?? "assignee",
+    });
+  };
+  const clearMonitor = () => updateMonitor(null);
+  const currentMonitorLabel = (() => {
+    if (issue.executionPolicy?.monitor?.nextCheckAt) {
+      return `Next check ${formatDate(new Date(issue.executionPolicy.monitor.nextCheckAt))}`;
+    }
+    if (issue.monitorLastTriggeredAt) {
+      return `Last triggered ${timeAgo(issue.monitorLastTriggeredAt)}`;
+    }
+    if (issue.executionState?.monitor?.status === "cleared") {
+      return "Cleared";
+    }
+    return "Not scheduled";
+  })();
+
   const selectedIssueLabels = useMemo(() => {
     const selectedIds = issue.labelIds ?? [];
     if (selectedIds.length === 0) return issue.labels ?? [];
@@ -1247,6 +1309,53 @@ export function IssueProperties({
             <span className="text-sm">{currentExecutionLabel}</span>
           </PropertyRow>
         )}
+
+        <PropertyRow label="Monitor">
+          <div className="flex w-full flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm">{currentMonitorLabel}</span>
+              {issue.monitorAttemptCount && issue.monitorAttemptCount > 0 ? (
+                <span className="text-xs text-muted-foreground">
+                  Attempt {issue.monitorAttemptCount}
+                </span>
+              ) : null}
+            </div>
+            <div className="flex flex-col gap-2 md:flex-row">
+              <input
+                type="datetime-local"
+                className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                value={monitorAtInput}
+                onChange={(e) => setMonitorAtInput(e.target.value)}
+              />
+              <input
+                type="text"
+                className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+                placeholder="What should the agent re-check?"
+                value={monitorNotesInput}
+                onChange={(e) => setMonitorNotesInput(e.target.value)}
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:opacity-50"
+                  disabled={!monitorAtInput}
+                  onClick={saveMonitor}
+                >
+                  Schedule
+                </button>
+                {issue.executionPolicy?.monitor ? (
+                  <button
+                    type="button"
+                    className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+                    onClick={clearMonitor}
+                  >
+                    Clear
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </PropertyRow>
 
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">

@@ -81,6 +81,7 @@ import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
+  setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -162,6 +163,47 @@ function summarizeIssueReferenceActivityDetails(input:
     ...(input.addedReferencedIssues.length > 0 ? { addedReferencedIssues: input.addedReferencedIssues } : {}),
     ...(input.removedReferencedIssues.length > 0 ? { removedReferencedIssues: input.removedReferencedIssues } : {}),
     ...(input.currentReferencedIssues.length > 0 ? { currentReferencedIssues: input.currentReferencedIssues } : {}),
+  };
+}
+
+function monitorPoliciesEqual(left: NormalizedExecutionPolicy | null, right: NormalizedExecutionPolicy | null) {
+  return JSON.stringify(left?.monitor ?? null) === JSON.stringify(right?.monitor ?? null);
+}
+
+function applyActorMonitorScheduledBy(
+  policy: NormalizedExecutionPolicy | null,
+  actorType: "agent" | "user",
+) {
+  return setIssueExecutionPolicyMonitorScheduledBy(policy, actorType === "user" ? "board" : "assignee");
+}
+
+function assertCanManageIssueMonitor(req: Request, assigneeAgentId: string | null, monitorChanged: boolean) {
+  if (!monitorChanged) return;
+  if (req.actor.type === "board") return;
+  if (req.actor.type === "agent" && req.actor.agentId && req.actor.agentId === assigneeAgentId) return;
+  throw forbidden("Only the assignee agent or a board user can manage issue monitors");
+}
+
+function summarizeIssueMonitor(
+  issue: {
+    monitorNextCheckAt?: Date | null;
+    monitorLastTriggeredAt?: Date | null;
+    monitorAttemptCount?: number | null;
+    monitorNotes?: string | null;
+    monitorScheduledBy?: string | null;
+    executionState?: unknown;
+  },
+  policy: NormalizedExecutionPolicy | null,
+) {
+  const state = parseIssueExecutionState(issue.executionState);
+  return {
+    nextCheckAt: issue.monitorNextCheckAt?.toISOString() ?? policy?.monitor?.nextCheckAt ?? null,
+    lastTriggeredAt: issue.monitorLastTriggeredAt?.toISOString() ?? state?.monitor?.lastTriggeredAt ?? null,
+    attemptCount: issue.monitorAttemptCount ?? state?.monitor?.attemptCount ?? 0,
+    notes: policy?.monitor?.notes ?? issue.monitorNotes ?? state?.monitor?.notes ?? null,
+    scheduledBy: issue.monitorScheduledBy ?? policy?.monitor?.scheduledBy ?? state?.monitor?.scheduledBy ?? null,
+    status: state?.monitor?.status ?? (policy?.monitor ? "scheduled" : null),
+    clearReason: state?.monitor?.clearReason ?? null,
   };
 }
 
@@ -1812,7 +1854,11 @@ export function issueRoutes(
     await assertIssueEnvironmentSelection(companyId, req.body.executionWorkspaceSettings?.environmentId);
 
     const actor = getActorInfo(req);
-    const executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+    const executionPolicy = applyActorMonitorScheduledBy(
+      normalizeIssueExecutionPolicy(req.body.executionPolicy),
+      actor.actorType,
+    );
+    assertCanManageIssueMonitor(req, req.body.assigneeAgentId ?? null, Boolean(executionPolicy?.monitor));
     const issue = await svc.create(companyId, {
       ...req.body,
       executionPolicy,
@@ -1846,6 +1892,25 @@ export function issueRoutes(
         }),
       },
     });
+
+    if (executionPolicy?.monitor) {
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.monitor_scheduled",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          nextCheckAt: executionPolicy.monitor.nextCheckAt,
+          notes: executionPolicy.monitor.notes,
+          scheduledBy: executionPolicy.monitor.scheduledBy,
+        },
+      });
+    }
 
     void queueIssueAssignmentWakeup({
       heartbeat,
@@ -2043,7 +2108,10 @@ export function issueRoutes(
       updateFields.status = "todo";
     }
     if (req.body.executionPolicy !== undefined) {
-      updateFields.executionPolicy = normalizeIssueExecutionPolicy(req.body.executionPolicy);
+      updateFields.executionPolicy = applyActorMonitorScheduledBy(
+        normalizeIssueExecutionPolicy(req.body.executionPolicy),
+        actor.actorType,
+      );
     }
     const previousExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
     const nextExecutionPolicy =
@@ -2053,10 +2121,13 @@ export function issueRoutes(
     if (normalizedAssigneeAgentId !== undefined) {
       updateFields.assigneeAgentId = normalizedAssigneeAgentId;
     }
+    const monitorChanged = monitorPoliciesEqual(previousExecutionPolicy, nextExecutionPolicy) === false;
+    assertCanManageIssueMonitor(req, existing.assigneeAgentId, req.body.executionPolicy !== undefined && monitorChanged);
 
     const transition = applyIssueExecutionPolicyTransition({
       issue: existing,
       policy: nextExecutionPolicy,
+      previousPolicy: previousExecutionPolicy,
       requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
       requestedAssigneePatch: {
         assigneeAgentId: normalizedAssigneeAgentId,
@@ -2069,6 +2140,7 @@ export function issueRoutes(
       },
       commentBody,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
+      monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
     });
     const decisionId = transition.decision ? randomUUID() : null;
     if (decisionId) {
@@ -2368,6 +2440,47 @@ export function issueRoutes(
           participants: approverChanges.participants,
           addedParticipants: approverChanges.addedParticipants,
           removedParticipants: approverChanges.removedParticipants,
+        },
+      });
+    }
+
+    const nextStoredExecutionPolicy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+    const previousMonitor = summarizeIssueMonitor(existing, previousExecutionPolicy);
+    const nextMonitor = summarizeIssueMonitor(issue, nextStoredExecutionPolicy);
+    const monitorScheduledChanged = previousMonitor.nextCheckAt !== nextMonitor.nextCheckAt;
+    if (nextMonitor.nextCheckAt && (monitorScheduledChanged || previousMonitor.notes !== nextMonitor.notes)) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.monitor_scheduled",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          nextCheckAt: nextMonitor.nextCheckAt,
+          previousNextCheckAt: previousMonitor.nextCheckAt,
+          notes: nextMonitor.notes,
+          scheduledBy: nextMonitor.scheduledBy,
+        },
+      });
+    } else if (!nextMonitor.nextCheckAt && previousMonitor.nextCheckAt) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.monitor_cleared",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          previousNextCheckAt: previousMonitor.nextCheckAt,
+          reason: nextMonitor.clearReason ?? "manual",
+          notes: previousMonitor.notes,
         },
       });
     }
