@@ -1005,11 +1005,23 @@ describe("IssueProperties", () => {
       }),
       childIssues: [],
       onUpdate,
+      inline: true,
     });
     await flush();
 
     expect(container.textContent).toContain("Monitor");
     expect(container.textContent).toContain("Next check");
+    expect(container.querySelector('input[type="datetime-local"]')).toBeNull();
+    expect(container.querySelector('input[placeholder="What should the agent re-check?"]')).toBeNull();
+
+    const monitorTrigger = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Next check"));
+    expect(monitorTrigger).not.toBeUndefined();
+
+    await act(async () => {
+      monitorTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
 
     const inputs = Array.from(container.querySelectorAll("input"));
     const datetimeInput = inputs.find((input) => input.getAttribute("type") === "datetime-local");

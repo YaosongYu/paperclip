@@ -33,7 +33,7 @@ import { formatDate, cn, projectUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Separator } from "@/components/ui/separator";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink } from "lucide-react";
+import { User, Hexagon, ArrowUpRight, Tag, Plus, GitBranch, FolderOpen, Check, ExternalLink, Clock } from "lucide-react";
 import { AgentIcon } from "./AgentIconPicker";
 
 function TruncatedCopyable({ value, icon: Icon }: { value: string; icon: React.ComponentType<{ className?: string }> }) {
@@ -124,6 +124,19 @@ function toDateTimeLocalValue(value: string | null | undefined) {
   if (Number.isNaN(date.getTime())) return "";
   const offsetMs = date.getTimezoneOffset() * 60_000;
   return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
+}
+
+function formatMonitorOffset(nextCheckAt: Date | string): string {
+  const deltaMs = new Date(nextCheckAt).getTime() - Date.now();
+  const absMinutes = Math.round(Math.abs(deltaMs) / 60_000);
+  if (absMinutes <= 0) return "now";
+  if (absMinutes < 60) return deltaMs >= 0 ? `in ${absMinutes}m` : `${absMinutes}m ago`;
+
+  const absHours = Math.round(absMinutes / 60);
+  if (absHours < 24) return deltaMs >= 0 ? `in ${absHours}h` : `${absHours}h ago`;
+
+  const absDays = Math.round(absHours / 24);
+  return deltaMs >= 0 ? `in ${absDays}d` : `${absDays}d ago`;
 }
 
 interface IssuePropertiesProps {
@@ -227,6 +240,7 @@ export function IssueProperties({
   const [reviewerSearch, setReviewerSearch] = useState("");
   const [approversOpen, setApproversOpen] = useState(false);
   const [approverSearch, setApproverSearch] = useState("");
+  const [monitorOpen, setMonitorOpen] = useState(false);
   const [labelsOpen, setLabelsOpen] = useState(false);
   const [labelSearch, setLabelSearch] = useState("");
   const [newLabelName, setNewLabelName] = useState("");
@@ -520,8 +534,12 @@ export function IssueProperties({
       serviceName,
       externalRef,
     });
+    setMonitorOpen(false);
   };
-  const clearMonitor = () => updateMonitor(null);
+  const clearMonitor = () => {
+    updateMonitor(null);
+    setMonitorOpen(false);
+  };
   const currentMonitorLabel = (() => {
     if (issue.executionPolicy?.monitor?.nextCheckAt) {
       return `Next check ${formatDate(new Date(issue.executionPolicy.monitor.nextCheckAt))}`;
@@ -534,6 +552,87 @@ export function IssueProperties({
     }
     return "Not scheduled";
   })();
+  const monitorNextCheckAt = issue.executionPolicy?.monitor?.nextCheckAt ?? null;
+  const monitorTrigger = (
+    <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+      {monitorNextCheckAt ? (
+        <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      ) : null}
+      <span
+        className={cn(
+          "min-w-0 text-sm break-words",
+          monitorNextCheckAt ? "text-foreground" : "text-muted-foreground",
+        )}
+        title={monitorNextCheckAt ? currentMonitorLabel : undefined}
+      >
+        {monitorNextCheckAt ? `Next check ${formatMonitorOffset(monitorNextCheckAt)}` : currentMonitorLabel}
+      </span>
+      {monitorNextCheckAt ? (
+        <span className="text-xs text-muted-foreground" title={currentMonitorLabel}>
+          {formatDate(new Date(monitorNextCheckAt))}
+        </span>
+      ) : null}
+    </span>
+  );
+  const monitorAttemptBadge = issue.monitorAttemptCount && issue.monitorAttemptCount > 0 ? (
+    <span className="text-xs text-muted-foreground">
+      Attempt {issue.monitorAttemptCount}
+    </span>
+  ) : null;
+  const monitorContent = (
+    <div className="flex w-full flex-col gap-2">
+      <div className="flex flex-col gap-2 md:flex-row">
+        <input
+          type="datetime-local"
+          className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          value={monitorAtInput}
+          onChange={(e) => setMonitorAtInput(e.target.value)}
+        />
+        <input
+          type="text"
+          className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          placeholder="What should the agent re-check?"
+          value={monitorNotesInput}
+          onChange={(e) => setMonitorNotesInput(e.target.value)}
+        />
+      </div>
+      <div className="flex flex-col gap-2 md:flex-row">
+        <input
+          type="text"
+          className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          placeholder="External service"
+          value={monitorServiceInput}
+          onChange={(e) => setMonitorServiceInput(e.target.value)}
+        />
+        <input
+          type="text"
+          className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
+          placeholder="External ref or URL"
+          value={monitorExternalRefInput}
+          onChange={(e) => setMonitorExternalRefInput(e.target.value)}
+        />
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:opacity-50"
+            disabled={!monitorAtInput}
+            onClick={saveMonitor}
+          >
+            Schedule
+          </button>
+          {issue.executionPolicy?.monitor ? (
+            <button
+              type="button"
+              className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+              onClick={clearMonitor}
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
 
   const selectedIssueLabels = useMemo(() => {
     const selectedIds = issue.labelIds ?? [];
@@ -1324,68 +1423,18 @@ export function IssueProperties({
           </PropertyRow>
         )}
 
-        <PropertyRow label="Monitor">
-          <div className="flex w-full flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm">{currentMonitorLabel}</span>
-              {issue.monitorAttemptCount && issue.monitorAttemptCount > 0 ? (
-                <span className="text-xs text-muted-foreground">
-                  Attempt {issue.monitorAttemptCount}
-                </span>
-              ) : null}
-            </div>
-            <div className="flex flex-col gap-2 md:flex-row">
-              <input
-                type="datetime-local"
-                className="rounded-md border border-border bg-transparent px-2 py-1 text-xs"
-                value={monitorAtInput}
-                onChange={(e) => setMonitorAtInput(e.target.value)}
-              />
-              <input
-                type="text"
-                className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
-                placeholder="What should the agent re-check?"
-                value={monitorNotesInput}
-                onChange={(e) => setMonitorNotesInput(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-2 md:flex-row">
-              <input
-                type="text"
-                className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
-                placeholder="External service"
-                value={monitorServiceInput}
-                onChange={(e) => setMonitorServiceInput(e.target.value)}
-              />
-              <input
-                type="text"
-                className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs"
-                placeholder="External ref or URL"
-                value={monitorExternalRefInput}
-                onChange={(e) => setMonitorExternalRefInput(e.target.value)}
-              />
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground disabled:opacity-50"
-                  disabled={!monitorAtInput}
-                  onClick={saveMonitor}
-                >
-                  Schedule
-                </button>
-                {issue.executionPolicy?.monitor ? (
-                  <button
-                    type="button"
-                    className="inline-flex items-center rounded-full border border-border px-2 py-0.5 text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-                    onClick={clearMonitor}
-                  >
-                    Clear
-                  </button>
-                ) : null}
-              </div>
-            </div>
-          </div>
-        </PropertyRow>
+        <PropertyPicker
+          inline={inline}
+          label="Monitor"
+          open={monitorOpen}
+          onOpenChange={setMonitorOpen}
+          triggerContent={monitorTrigger}
+          triggerClassName="min-w-0 max-w-full"
+          popoverClassName={cn("max-w-full", inline ? "w-full" : "w-80 sm:w-[32rem]")}
+          extra={monitorAttemptBadge}
+        >
+          {monitorContent}
+        </PropertyPicker>
 
         {issue.requestDepth > 0 && (
           <PropertyRow label="Depth">
