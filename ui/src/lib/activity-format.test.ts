@@ -57,4 +57,13 @@ describe("activity formatting", () => {
     expect(formatActivityVerb("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers on");
     expect(formatIssueActivityAction("issue.reviewers_updated", details, { agentMap })).toBe("updated reviewers");
   });
+
+  it("uses plain next-step copy for successful-run handoff activity", () => {
+    expect(formatActivityVerb("issue.successful_run_handoff_required")).toBe("flagged missing next step on");
+    expect(formatIssueActivityAction("issue.successful_run_handoff_required")).toBe("Run finished without a clear next step");
+    expect(formatIssueActivityAction("issue.successful_run_handoff_resolved")).toBe("Next step chosen");
+    expect(formatIssueActivityAction("issue.successful_run_handoff_escalated")).toBe(
+      "Run finished without a next step - recovery escalated",
+    );
+  });
 });
