@@ -69,7 +69,10 @@ vi.mock("../adapters/index.ts", async () => {
   };
 });
 
-import { heartbeatService } from "../services/heartbeat.ts";
+import {
+  heartbeatService,
+  redactDetectedSuccessfulRunProgressSummaryForBoard,
+} from "../services/heartbeat.ts";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
@@ -1297,6 +1300,67 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(activityLog)
       .where(eq(activityLog.entityId, issueId));
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(true);
+  });
+
+  it("redacts secret-bearing successful-run detected progress before handoff disclosure", async () => {
+    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const bearerSecret = "live-bearer-token-value";
+    const apiKeySecret = "sk-testsuccessfulhandoffsecret";
+    const redactedDetectedSummary = redactDetectedSuccessfulRunProgressSummaryForBoard(
+      `Next action noted: Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
+      { enabled: false },
+    );
+    expect(redactedDetectedSummary).toContain("***REDACTED***");
+    expect(redactedDetectedSummary).not.toContain(bearerSecret);
+    expect(redactedDetectedSummary).not.toContain(apiKeySecret);
+
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Made progress but left the issue open.",
+      resultJson: {
+        message: `Next action: Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
+      },
+      provider: "test",
+      model: "test-model",
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+
+    const handoffWakeups = await waitForValue(async () => {
+      const rows = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.agentId, agentId));
+      const matches = rows.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff");
+      return matches.length > 0 ? matches : null;
+    }, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    expect(handoffWakeups).toHaveLength(1);
+    const wakeupPayloadText = JSON.stringify(handoffWakeups[0]?.payload ?? {});
+    expect(wakeupPayloadText).not.toContain(bearerSecret);
+    expect(wakeupPayloadText).not.toContain(apiKeySecret);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    const handoffComment = comments.find((comment) => comment.body.startsWith("## This issue still needs a next step"));
+    expect(handoffComment).toBeTruthy();
+    expect(handoffComment?.body).not.toContain(bearerSecret);
+    expect(handoffComment?.body).not.toContain(apiKeySecret);
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    const handoffActivity = activity.find((event) => event.action === "issue.successful_run_handoff_required");
+    expect(handoffActivity).toBeTruthy();
+    const activityDetailsText = JSON.stringify(handoffActivity?.details ?? {});
+    expect(activityDetailsText).not.toContain(bearerSecret);
+    expect(activityDetailsText).not.toContain(apiKeySecret);
   });
 
   it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {

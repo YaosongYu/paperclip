@@ -128,8 +128,12 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-
 import { recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { withAgentStartLock } from "./agent-start-lock.js";
-import { redactCurrentUserText, redactCurrentUserValue } from "../log-redaction.js";
-import { redactEventPayload } from "../redaction.js";
+import {
+  redactCurrentUserText,
+  redactCurrentUserValue,
+  type CurrentUserRedactionOptions,
+} from "../log-redaction.js";
+import { redactEventPayload, redactSensitiveText } from "../redaction.js";
 import {
   hasSessionCompactionThresholds,
   resolveSessionCompactionPolicy,
@@ -149,6 +153,15 @@ const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
+
+export function redactDetectedSuccessfulRunProgressSummaryForBoard(
+  summary: string,
+  currentUserRedactionOptions?: CurrentUserRedactionOptions,
+) {
+  const normalized = summary.replace(/\s+/g, " ").trim();
+  const redacted = redactSensitiveText(redactCurrentUserText(normalized, currentUserRedactionOptions));
+  return redacted.length <= 280 ? redacted : `${redacted.slice(0, 277)}...`;
+}
 const MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS = 100;
 const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
@@ -3134,11 +3147,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       readNonEmptyString(resultJson.message),
     ].filter((value): value is string => Boolean(value));
     const summary = candidates[0] ?? "The run reported progress, but did not choose a next step.";
-    const redacted = redactCurrentUserText(
-      summary.replace(/\s+/g, " ").trim(),
+    return redactDetectedSuccessfulRunProgressSummaryForBoard(
+      summary,
       await getCurrentUserRedactionOptions(),
     );
-    return redacted.length <= 280 ? redacted : `${redacted.slice(0, 277)}...`;
   }
 
   function buildSuccessfulRunHandoffComment(input: {

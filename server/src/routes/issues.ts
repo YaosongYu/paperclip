@@ -79,6 +79,7 @@ import { executionWorkspaceService as executionWorkspaceServiceDirect } from "..
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { environmentService } from "../services/environments.js";
+import { redactSensitiveText } from "../redaction.js";
 import {
   applyIssueExecutionPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -141,6 +142,11 @@ function successfulRunHandoffStateFromActivity(row: {
           : null;
   if (!state) return null;
 
+  const detectedProgressSummary =
+    readNonEmptyString(details.detectedProgressSummary)
+    ?? readNonEmptyString(details.detected_progress_summary)
+    ?? null;
+
   return {
     state,
     required: state === "required",
@@ -159,10 +165,9 @@ function successfulRunHandoffStateFromActivity(row: {
       ?? readNonEmptyString(details.agentId)
       ?? row.agentId
       ?? null,
-    detectedProgressSummary:
-      readNonEmptyString(details.detectedProgressSummary)
-      ?? readNonEmptyString(details.detected_progress_summary)
-      ?? null,
+    detectedProgressSummary: detectedProgressSummary
+      ? redactSensitiveText(detectedProgressSummary)
+      : null,
     createdAt: row.createdAt,
   };
 }
