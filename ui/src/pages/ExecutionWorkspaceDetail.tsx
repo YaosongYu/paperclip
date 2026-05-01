@@ -384,8 +384,8 @@ function ExecutionWorkspaceRoutinesList({
   const [runningRoutineId, setRunningRoutineId] = useState<string | null>(null);
 
   const { data: routines, isLoading, error } = useQuery({
-    queryKey: queryKeys.routines.list(workspace.companyId),
-    queryFn: () => routinesApi.list(workspace.companyId),
+    queryKey: queryKeys.routines.list(workspace.companyId, { projectId: workspace.projectId }),
+    queryFn: () => routinesApi.list(workspace.companyId, { projectId: workspace.projectId }),
   });
 
   const { data: agents } = useQuery({
