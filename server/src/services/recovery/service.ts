@@ -345,7 +345,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .where(
           and(
             eq(agentWakeupRequests.companyId, companyId),
-              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
             sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
           ),
         )
