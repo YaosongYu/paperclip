@@ -1299,6 +1299,114 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(true);
   });
 
+  it("escalates an exhausted failed successful-run handoff without using generic continuation recovery first", async () => {
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "adapter_failed",
+      runError: "Authorization: Bearer sk-test-successful-handoff-secret",
+    });
+    const sourceRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.successfulRunHandoffEscalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const recovery = await waitForValue(async () =>
+      db.select().from(issues).where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "stranded_issue_recovery"),
+          eq(issues.originId, issueId),
+        ),
+      ).then((rows) => rows[0] ?? null),
+    );
+    expect(recovery?.assigneeAgentId).toBe(agentId);
+    expect(recovery?.title).toContain("Recover missing next step");
+    expect(recovery?.description).toContain("Normalized cause: `successful_run_missing_state`");
+    expect(recovery?.description).toContain(`Source run: [\`${sourceRunId}\`]`);
+    expect(recovery?.description).toContain("Missing disposition: `clear_next_step`");
+    expect(recovery?.description).toContain("Source assignee: [CodexCoder]");
+    expect(recovery?.description).not.toContain("sk-test-successful-handoff-secret");
+
+    const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("blocked");
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([recovery?.id]);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments[0]?.body).toContain("Normalized cause: `successful_run_missing_state`");
+    expect(comments[0]?.body).toContain("Missing disposition: `clear_next_step`");
+    expect(comments[0]?.body).toContain("Recovery owner: [CodexCoder]");
+    expect(comments[0]?.body).not.toContain("sk-test-successful-handoff-secret");
+
+    const activity = await db.select().from(activityLog).where(eq(activityLog.entityId, issueId));
+    expect(activity.some((event) => event.action === "issue.successful_run_handoff_escalated")).toBe(true);
+  });
+
+  it("escalates an exhausted successful handoff run that still leaves no disposition", async () => {
+    const { companyId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    const sourceRunId = randomUUID();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId,
+          resumeFromRunId: sourceRunId,
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.successfulContinuationObserved).toBe(0);
+    expect(result.successfulRunHandoffEscalated).toBe(1);
+
+    const recovery = await waitForValue(async () =>
+      db.select().from(issues).where(
+        and(
+          eq(issues.companyId, companyId),
+          eq(issues.originKind, "stranded_issue_recovery"),
+          eq(issues.originId, issueId),
+        ),
+      ).then((rows) => rows[0] ?? null),
+    );
+    expect(recovery?.description).toContain("Latest handoff run status: `succeeded`");
+    expect(recovery?.description).toContain("Suggested");
+  });
+
   it("clears the detached warning when the run reports activity again", async () => {
     const { runId } = await seedRunFixture({
       includeIssue: false,
